@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-TFG – Problema 9.2 (GUI) con customtkinter + chorro con cota dinámica
-a) CCI analítica
-b) Caudal mínimo para h>=8 m y selección de curva de bomba (IBS: rodete 256 mm aprox.)
-c) Punto de funcionamiento (Q, H), rendimiento, potencia y coste energético
-d) Válvula para bajar la altura del chorro a h_obj (por defecto 5 m): hf_val y K_equiv
+TFG – Problema 9.2 (GUI) con:
+- CCI analítica y curva de bomba
+- Selección automática de bomba según h_mínima (familia 225, 235, 245, 256, 266 mm)
+- Dashboard visual de rodetes bajo el apartado b)
+- Badge en la gráfica con el rodete activo
+- Panel del chorro con cota dinámica y alarma si h < h_obj
+- Barra de carga “CAMBIANDO BOMBA…” cuando cambia el rodete
 
-Interfaz:
-- Sliders+Entry sincronizados a la izquierda; gráfica (curvas Q–H + chorro) y resultados en dos columnas.
-- Debounce (150 ms) y “flash” en resultados que cambian.
-- Panel derecho extra: dibujo del chorro con cota h y línea objetivo h_obj.
+Afinidad (misma rpm): Q ∝ D, H ∝ D^2, P ∝ D^3. La eficiencia se mantiene aprox.
 """
 
 import numpy as np
@@ -37,6 +36,7 @@ def choose_CHW_from_eps_over_D(eps_cm: float, D_m: float) -> float:
     return 100.0
 
 def interp_xy(x_table, y_table, x):
+    # lineal, extremos planos
     if x <= x_table[0]:   return float(y_table[0])
     if x >= x_table[-1]:  return float(y_table[-1])
     for i in range(len(x_table)-1):
@@ -44,7 +44,7 @@ def interp_xy(x_table, y_table, x):
         if x0 <= x <= x1:
             y0, y1 = y_table[i], y_table[i+1]
             t = (x - x0) / (x1 - x0)
-            return float(y0 + t*(y1 - y1 + y1 - y0))  # evita warning por inline
+            return float(y0 + t*(y1 - y0))
     return float(y_table[-1])
 
 def bisect_root(f, a, b, tol=1e-8, itmax=200):
@@ -57,24 +57,37 @@ def bisect_root(f, a, b, tol=1e-8, itmax=200):
         else: a, fa = m, fm
     return 0.5*(a+b)
 
-# ----------- Curva de bomba (IBS 9.2, rodete 256 mm aprox.) ----------- #
-Qb_ls = np.array([40, 50, 60, 70, 80, 90], dtype=float)  # l/s
-Hb_m  = np.array([22, 22, 22, 21.8, 21.0, 19.7], dtype=float)  # m
-eta_p = np.array([0.72, 0.76, 0.79, 0.78, 0.76, 0.72], dtype=float) * 100.0  # %
+# ----------- Curva base de bomba (IBS 9.2 ~ rodete 256 mm) ----------- #
+Qb_base_ls = np.array([40, 50, 60, 70, 80, 90], dtype=float)  # l/s
+Hb_base_m  = np.array([22, 22, 22, 21.8, 21.0, 19.7], dtype=float)  # m
+eta_base   = np.array([0.72, 0.76, 0.79, 0.78, 0.76, 0.72], dtype=float)  # fracción
+D_BASE_MM  = 256.0
 
-def H_bomba(Ql):   return interp_xy(Qb_ls, Hb_m, Ql)
-def eta_bomba(Ql): return interp_xy(Qb_ls, eta_p, Ql) / 100.0
+RODETES_MM = [225.0, 235.0, 245.0, 256.0, 266.0]  # familia visible en el "dashboard"
+
+def gen_curve_for_diameter(D_mm: float):
+    """Escala la curva base por leyes de afinidad manteniendo rpm."""
+    r = D_mm / D_BASE_MM
+    Q_ls = Qb_base_ls * r
+    H_m  = Hb_base_m * (r**2)
+    # eficiencia: aproximación simple, igual que la base por posición relativa
+    eta = eta_base.copy()
+    return Q_ls, H_m, eta
 
 # ============================ GUI ============================ #
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Problema 9.2 – Fuente de chorro vertical (GUI)")
-        self.geometry("1200x850")
-        self.minsize(1100, 780)
+        self.geometry("1220x880")
+        self.minsize(1120, 800)
 
         self.Q_plot = np.linspace(0.0, 100.0, 400)  # l/s
         self._update_job = None
+
+        # Estado de bomba activa
+        self.active_D = 256.0
+        self.pump_curves = {D: gen_curve_for_diameter(D) for D in RODETES_MM}
 
         # Fuentes
         self.font_h1 = ctk.CTkFont(family="Segoe UI", size=20, weight="bold")
@@ -128,7 +141,7 @@ class App(ctk.CTk):
         root.grid_rowconfigure(0, weight=1)
 
         # Lado izquierdo: controles
-        controls = ctk.CTkScrollableFrame(root, width=420)
+        controls = ctk.CTkScrollableFrame(root, width=440)
         controls.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
 
         # Variables (por defecto del enunciado)
@@ -139,8 +152,8 @@ class App(ctk.CTk):
         self.eps_var   = ctk.StringVar(value="0.015") # cm
         self.Dc_var    = ctk.StringVar(value="80")    # mm boquilla
         self.kc_var    = ctk.StringVar(value="0.8")
-        self.h8_var    = ctk.StringVar(value="8.0")   # m
-        self.hobj_var  = ctk.StringVar(value="8.0")   # m
+        self.h8_var    = ctk.StringVar(value="8.0")   # m (h mínima)
+        self.hobj_var  = ctk.StringVar(value="8.0")   # m (objetivo por defecto)
         self.precio_var= ctk.StringVar(value="0.11")  # €/kWh
 
         ctk.CTkLabel(controls, text="Parámetros", font=self.font_h1).pack(anchor="w", padx=8, pady=(8, 6))
@@ -169,35 +182,25 @@ class App(ctk.CTk):
             ent = ctk.CTkEntry(sframe, textvariable=var, width=80, justify="right")
             ent.grid(row=0, column=1, sticky="e")
 
-            # slider -> entry
             def on_slide(val):
-                var.set(fmt.format(val))
-                self._schedule_recalc()
+                var.set(fmt.format(val)); self._schedule_recalc()
             slider.configure(command=on_slide)
 
-            # entry -> slider
             def on_entry_change(*_):
                 txt = str(var.get()).replace(",", ".").strip()
-                try:
-                    x = float(txt)
-                except ValueError:
-                    return
+                try: x = float(txt)
+                except ValueError: return
                 x = min(max(x, vmin), vmax)
-                slider.set(x)
-                self._schedule_recalc()
+                slider.set(x); self._schedule_recalc()
             var.trace_add("write", on_entry_change)
 
             def on_focus_out(_):
                 txt = str(var.get()).replace(",", ".").strip()
-                try:
-                    x = float(txt)
-                except ValueError:
-                    x = slider.get()
+                try: x = float(txt)
+                except ValueError: x = slider.get()
                 x = min(max(x, vmin), vmax)
                 var.set(fmt.format(x)); slider.set(x)
-            ent.bind("<FocusOut>", on_focus_out)
-            ent.bind("<Return>", lambda e: on_focus_out(e))
-
+            ent.bind("<FocusOut>", on_focus_out); ent.bind("<Return>", lambda e: on_focus_out(e))
             return ent, slider
 
         # Sliders
@@ -230,12 +233,15 @@ class App(ctk.CTk):
 
         # Gráfica: dos subplots, curvas y chorro
         g = ctk.CTkFrame(right); g.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4,2))
-        self.fig = plt.Figure(figsize=(6.9, 4.8))
+        self.fig = plt.Figure(figsize=(7.2, 4.9))
         gs = self.fig.add_gridspec(1, 2, width_ratios=[2.0, 1.0])
         self.ax  = self.fig.add_subplot(gs[0, 0])    # Q-H
         self.ax_jet = self.fig.add_subplot(gs[0, 1]) # chorro
         self.canvas = FigureCanvasTkAgg(self.fig, master=g)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
+
+        # Badge dinámico sobre la gráfica (texto dentro del eje)
+        self.badge_artist = None
 
         # Resultados (dos columnas)
         res = ctk.CTkFrame(right); res.grid(row=1, column=0, sticky="nsew", padx=4, pady=(2,4))
@@ -245,7 +251,18 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(left, text="Resultados a, b, c", font=self.font_h1).pack(anchor="w", padx=8, pady=(4,2))
         self.txt_a = ctk.CTkTextbox(left, height=96, font=self.font_body); self.txt_a.pack(fill="x", padx=8, pady=4)
-        self.txt_b = ctk.CTkTextbox(left, height=72, font=self.font_body); self.txt_b.pack(fill="x", padx=8, pady=4)
+
+        # b) bloque: texto + dashboard de bombas
+        self.txt_b = ctk.CTkTextbox(left, height=72, font=self.font_body); self.txt_b.pack(fill="x", padx=8, pady=(4,2))
+        self.pump_bar = ctk.CTkFrame(left); self.pump_bar.pack(fill="x", padx=8, pady=(2,6))
+        ctk.CTkLabel(self.pump_bar, text="Bombas disponibles (rodete):", font=self.font_body).pack(anchor="w", pady=(4,2))
+        self.pump_labels = {}
+        row = ctk.CTkFrame(self.pump_bar); row.pack(fill="x", pady=(0,6))
+        for D in RODETES_MM:
+            lbl = ctk.CTkLabel(row, text=f"{int(D)} mm", corner_radius=10, padx=10, pady=6)
+            lbl.pack(side="left", padx=4)
+            self.pump_labels[D] = lbl
+
         self.txt_c = ctk.CTkTextbox(left, height=72, font=self.font_body); self.txt_c.pack(fill="x", padx=8, pady=4)
         for tb in (self.txt_a, self.txt_b, self.txt_c):
             tb.insert("end", "Pendiente de cálculo…\n"); tb.configure(state="disabled")
@@ -271,9 +288,8 @@ class App(ctk.CTk):
             "• H_mi(Q) = z + (1 + k_c)·(V_c^2/2g) + hf_tubería(Q).\n"
             "• V_c = Q·10^-3 / (π D_c^2/4); con Q en l/s ⇒ V_c^2/2g = k_v2g(D_c)·Q^2.\n"
             "• hf_tubería = (J_ℓ·L)·Q^1.852, siendo J_ℓ el coef. unitario Hazen–Williams para Q en l/s.\n"
-            "• b) Para h≥8 m, basta con V_c^2/2g≥8 → Q≥sqrt(8/k_v2g).\n"
-            "• d) Para h=h_obj: se calcula Q_obj y se añade hf_válvula para que la CCI pase por "
-            "(Q_obj, H_bomba(Q_obj)).\n"
+            "• b) h_mín fija Q_min. Si la bomba activa no da H en Q_min → seleccionar otra curva (rodete) por afinidad.\n"
+            "• d) Para h = h_obj: se añade hf_válvula para que la CCI pase por (Q_obj, H_bomba(Q_obj)).\n"
         )
         notes.configure(state="disabled")
 
@@ -295,25 +311,26 @@ class App(ctk.CTk):
         ax.add_patch(plt.Rectangle((-0.1, 0.0), 0.2, 0.12, fill=True))
 
         # Chorro
-        ax.plot([0, 0], [0, h_jet_m], linewidth=6, alpha=0.6)
+        ax.plot([0, 0], [0, h_jet_m], linewidth=6, alpha=0.6, solid_capstyle="round")
 
         # Cota del chorro
         ax.annotate("",
             xy=(0.35, h_jet_m), xytext=(0.35, 0),
             arrowprops=dict(arrowstyle="<->", lw=1.8))
-        ax.text(0.38, h_jet_m/2, f"h = {h_jet_m:.2f} m", va="center", rotation=90)
+        ax.text(0.38, h_jet_m/2, f"h = {h_jet_m:.2f} m",
+                va="center", rotation=90,
+                bbox=dict(facecolor="white", alpha=0.6, boxstyle="round,pad=0.2"))
 
         # Objetivo
         if h_obj_m is not None:
             ax.axhline(h_obj_m, linestyle="--", linewidth=1)
             ax.text(-0.55, h_obj_m, f"h_obj = {h_obj_m:.2f} m", va="center")
 
-        # Si la potencia del chorro no alcanza la altura objetivo
+        # Aviso si no se alcanza
         if h_obj_m is not None and h_jet_m < h_obj_m:
-            ax.text(0, ymax*0.9, "⚠ Potencia del chorro insuficiente",
+            ax.text(0, ymax*0.92, "⚠ Potencia del chorro insuficiente",
                     color="red", ha="center", va="top", fontsize=11, weight="bold")
 
-        # Si se corta el eje
         if h_jet_m >= ymax*0.999:
             ax.text(0, ymax*0.98, "cortado", ha="center", va="top")
 
@@ -324,12 +341,17 @@ class App(ctk.CTk):
         self.ax.set_xlabel("Q (l/s)")
         self.ax.set_ylabel("H (m)")
         self.ax.set_title("Curvas características – 9.2")
-        self.ax.plot(Qb_ls, Hb_m, "o-", linewidth=2, label="Curva de la bomba")
+
+        # Curva de la bomba activa
+        Qc, Hc, _ = self.pump_curves[self.active_D]
+        self.ax.plot(Qc, Hc, "o-", linewidth=2, label=f"Curva de la bomba")
+
         self.ax.set_xlim(0, 100)
-        self.ax.set_ylim(0, max(Hb_m)*1.25)
+        self.ax.set_ylim(0, max(Hc)*1.25)
+        self._update_badge()
         self.ax.legend()
 
-        # Panel chorro vacío
+        # Chorro vacío
         self.ax_jet.cla()
         self.ax_jet.set_title("Chorro")
         self.ax_jet.set_ylabel("Altura (m)")
@@ -339,6 +361,34 @@ class App(ctk.CTk):
         self.ax_jet.add_patch(plt.Rectangle((-0.1, 0.0), 0.2, 0.12, fill=True))
 
         self.canvas.draw_idle()
+
+    # -------------------- Animación cambio de bomba -------------------- #
+    def _animate_pump_switch(self, new_D_mm: float, on_done):
+        win = ctk.CTkToplevel(self)
+        win.title("CAMBIANDO BOMBA…")
+        win.geometry("360x120")
+        win.resizable(False, False)
+        win.transient(self)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text=f"Cambiando a rodete {int(new_D_mm)} mm…",
+                     font=self.font_h2).pack(pady=(16, 8))
+        pb = ctk.CTkProgressBar(win)
+        pb.pack(fill="x", padx=20, pady=(0, 14))
+        pb.set(0.0)
+
+        steps, i = 40, 0  # 40*20 ms ~ 0.8 s
+        def tick():
+            nonlocal i
+            i += 1
+            pb.set(i/steps)
+            if i < steps:
+                win.after(20, tick)
+            else:
+                try: win.destroy()
+                except Exception: pass
+                on_done()
+        tick()
 
     # -------------------- Modelo -------------------- #
     def _parse(self):
@@ -373,6 +423,52 @@ class App(ctk.CTk):
     def H_inst(self, Q_lps, z, J_lps, L, kv2g, kc, Kv_add=0.0):
         return z + (1.0 + kc + Kv_add) * kv2g * (Q_lps**2) + (J_lps*L) * (Q_lps**1.852)
 
+    # Curva de bomba activa (interpoladores)
+    def Hb_activa(self, Ql):
+        Qc, Hc, _ = self.pump_curves[self.active_D]
+        return interp_xy(Qc, Hc, Ql)
+
+    def eta_activa(self, Ql):
+        Qc, _, eta = self.pump_curves[self.active_D]
+        return float(interp_xy(Qc, eta, Ql))
+
+    # -------------------- Selección de bomba -------------------- #
+    def _select_pump_for_requirement(self, Qmin, Hneed, margin=0.05):
+        """
+        Devuelve el diámetro seleccionado y un flag si hubo cambio.
+        Criterio: rodete mínimo que cumpla H_b(Qmin) >= Hneed*(1+margin).
+        Si ninguno cumple, elige la mayor y marca 'no_cumple'.
+        """
+        feasible = []
+        for D in RODETES_MM:
+            Qc, Hc, _ = self.pump_curves[D]
+            Hb_at_Qmin = interp_xy(Qc, Hc, Qmin)
+            if Hb_at_Qmin >= Hneed*(1+margin):
+                feasible.append(D)
+        if feasible:
+            chosen = min(feasible)
+            return chosen, (chosen != self.active_D), True
+        # si no hay factibles, escoge la mayor para “lo más cercano”
+        chosen = max(RODETES_MM)
+        return chosen, (chosen != self.active_D), False
+
+    def _update_pump_bar(self):
+        for D, lbl in self.pump_labels.items():
+            if D == self.active_D:
+                lbl.configure(text=f"{int(D)} mm ✓", fg_color="#E6FFE6", text_color="black", corner_radius=12)
+            else:
+                lbl.configure(text=f"{int(D)} mm", fg_color="#F0F0F0", text_color="gray20", corner_radius=10)
+
+    def _update_badge(self):
+        if self.badge_artist:
+            try: self.badge_artist.remove()
+            except Exception: pass
+        self.badge_artist = self.ax.text(
+            0.98, 0.98, f"Rodete {int(self.active_D)} mm",
+            transform=self.ax.transAxes, ha="right", va="top",
+            bbox=dict(facecolor="white", alpha=0.85, boxstyle="round,pad=0.2")
+        )
+
     # -------------------- Acción: calcular -------------------- #
     def calcular(self):
         parsed = self._parse()
@@ -387,81 +483,102 @@ class App(ctk.CTk):
         Q_min8 = np.sqrt(h8 / kv2g)
         Hmin8  = self.H_inst(Q_min8, z, J_lps, Le, kv2g, kc, Kv_add=0.0)
 
-        # c) punto de funcionamiento
-        def equilibrio(q):
-            return H_bomba(q) - self.H_inst(q, z, J_lps, Le, kv2g, kc, Kv_add=0.0)
-        Qpf = bisect_root(equilibrio, 0.0, 100.0, tol=1e-8)
-        if Qpf is None:
-            messagebox.showwarning("Sin intersección", "No hay corte entre CCI y la curva de bomba en [0,100] l/s.")
-            return
-        Hpf  = H_bomba(Qpf)
-        etapf = eta_bomba(Qpf)
-        gamma = 9800.0 * s
-        Pabs_kW = gamma * (Qpf/1000.0) * Hpf / max(etapf,1e-9) / 1000.0
-        coste_eur_m3 = (Pabs_kW / (Qpf*3.6)) * precio  # €/m3
+        # Selección automática de bomba según requisito en Q_min
+        new_D, changed, feasible = self._select_pump_for_requirement(Q_min8, Hmin8, margin=0.05)
 
-        # d) válvula para h_obj
-        Qobj = np.sqrt(hobj / kv2g)
-        H_inst_base = self.H_inst(Qobj, z, J_lps, Le, kv2g, kc, Kv_add=0.0)
-        H_bomb_obj  = H_bomba(Qobj)
-        hf_val = H_bomb_obj - H_inst_base
-        if hf_val < 0:
-            Kv_add = 0.0
-            estado_d = "La bomba aporta menos altura que la CCI a Q_obj; no se alcanza h_obj solo con válvula."
+        def render_everything():
+            # fija bomba activa y dashboard
+            self.active_D = new_D
+            self._update_pump_bar()
+
+            # c) punto de funcionamiento con la bomba activa
+            def equilibrio(q):
+                return self.Hb_activa(q) - self.H_inst(q, z, J_lps, Le, kv2g, kc, Kv_add=0.0)
+            Qpf = bisect_root(equilibrio, 0.0, 100.0, tol=1e-8)
+            if Qpf is None:
+                messagebox.showwarning("Sin intersección", "No hay corte entre CCI y la curva de bomba en [0,100] l/s.")
+                return
+            Hpf  = self.Hb_activa(Qpf)
+            etapf = self.eta_activa(Qpf)
+            gamma = 9800.0 * s
+            Pabs_kW = gamma * (Qpf/1000.0) * Hpf / max(etapf,1e-9) / 1000.0
+            coste_eur_m3 = (Pabs_kW / (Qpf*3.6)) * precio  # €/m3
+
+            # d) válvula para h_obj
+            Qobj = np.sqrt(hobj / kv2g)
+            H_inst_base = self.H_inst(Qobj, z, J_lps, Le, kv2g, kc, Kv_add=0.0)
+            H_bomb_obj  = self.Hb_activa(Qobj)
+            hf_val = H_bomb_obj - H_inst_base
+            if hf_val < 0:
+                Kv_add = 0.0
+                estado_d = "La bomba aporta menos altura que la CCI a Q_obj; no se alcanza h_obj solo con válvula."
+            else:
+                Kv_add = hf_val / (kv2g * Qobj**2)
+                estado_d = "Se añade pérdida en válvula para que la CCI pase por (Q_obj, H_bomba(Q_obj))."
+
+            # ----- Texto largo ----- #
+            self.text_res.configure(state="normal"); self.text_res.delete("1.0", "end")
+            self.text_res.insert("end", "[a] Curva característica (CCI):\n")
+            self.text_res.insert("end", f"    Hmi(Q) = {z:.2f} + {(1+kc)*kv2g:.6e}·Q^2 + {Jtot:.6e}·Q^1.852   (Q en l/s, H en m)\n")
+            self.text_res.insert("end", f"    (C_HW≈{C_HW:.0f}, J_ℓ={J_lps:.6e}/m; Dp={Dp_m*1000:.0f} mm, Le={Le:.0f} m, Dc={Dc_m*1000:.0f} mm, kc={kc:.2f})\n\n")
+            self.text_res.insert("end", f"[b] h≥{h8:.1f} m → Q_min≈{Q_min8:.2f} l/s; Hmi(Q_min)≈{Hmin8:.2f} m\n")
+            feas_txt = "OK" if feasible else "NO cubierta por la familia; seleccionada la mayor disponible"
+            self.text_res.insert("end", f"    Selección de bomba: rodete {int(self.active_D)} mm ({feas_txt}).\n\n")
+            self.text_res.insert("end", f"[c] Q≈{Qpf:.2f} l/s, H≈{Hpf:.2f} m, η≈{etapf*100:.1f} %, P_abs≈{Pabs_kW:.2f} kW, coste≈{coste_eur_m3:.4f} €/m³ (precio={precio:.2f} €/kWh)\n\n")
+            self.text_res.insert("end", f"[d] h_obj={hobj:.1f} m → Q_obj≈{Qobj:.2f} l/s; H_bomba≈{H_bomb_obj:.2f} m, Hmi_base≈{H_inst_base:.2f} m\n")
+            if hf_val >= 0:
+                self.text_res.insert("end", f"    hf_val≈{hf_val:.2f} m  (K_equiv≈{Kv_add:.2f})\n")
+            else:
+                self.text_res.insert("end", f"    {estado_d}\n")
+            self.text_res.configure(state="disabled")
+
+            # ----- Resultados cortos + dashboard b) ----- #
+            self._set_text(self.txt_a, f"[a] Hmi(Q)={z:.2f}+{(1+kc)*kv2g:.6e}·Q²+{Jtot:.6e}·Q^1.852  (C_HW≈{C_HW:.0f}, J_ℓ={J_lps:.6e}/m)\n")
+            self._set_text(self.txt_b, f"[b] Q_min≈{Q_min8:.2f} l/s; Hmi(Q_min)≈{Hmin8:.2f} m\n"
+                                       f"    Bomba activa: rodete {int(self.active_D)} mm\n")
+            self._set_text(self.txt_c, f"[c] Q≈{Qpf:.2f} l/s, H≈{Hpf:.2f} m, η≈{etapf*100:.1f} %, P_abs≈{Pabs_kW:.2f} kW, coste≈{coste_eur_m3:.4f} €/m³\n")
+            self._update_pump_bar()
+
+            # ----- Gráfica Q-H ----- #
+            self.ax.cla()
+            self.ax.grid(True)
+            self.ax.set_xlabel("Q (l/s)")
+            self.ax.set_ylabel("H (m)")
+            self.ax.set_title("Curvas características – 9.2")
+
+            # CCI
+            Hcci = [self.H_inst(q, z, J_lps, Le, kv2g, kc, Kv_add=0.0) for q in self.Q_plot]
+            self.ax.plot(self.Q_plot, Hcci, label="CCI instalación", linewidth=2)
+
+            # Curva de bomba activa
+            Qc, Hc, _ = self.pump_curves[self.active_D]
+            self.ax.plot(Qc, Hc, "o-", label=f"Curva de la bomba", linewidth=2)
+
+            # Punto de funcionamiento
+            self.ax.plot([Qpf], [Hpf], "s", markersize=8, label="Punto de funcionamiento")
+
+            # Marcadores objetivo d)
+            self.ax.axvline(Qobj, linestyle="--", linewidth=1)
+            self.ax.plot([Qobj], [H_bomb_obj], "D", markersize=7, label="Bomba @ Q_obj")
+            self.ax.plot([Qobj], [H_inst_base], "^", markersize=7, label="CCI base @ Q_obj")
+
+            self.ax.set_xlim(0, 100)
+            ymax = max(max(Hc), max(Hcci), H_bomb_obj, Hpf) * 1.15
+            self.ax.set_ylim(0, max(25.0, ymax))
+            self._update_badge()
+            self.ax.legend(loc="best")
+
+            # ----- Chorro dinámico ----- #
+            h_pf = kv2g * (Qpf**2)
+            self._draw_jet(h_pf, hobj)
+
+            self.canvas.draw_idle()
+
+        # Si cambia el rodete, mostramos barra de carga; si no, render directo
+        if changed:
+            self._animate_pump_switch(new_D, render_everything)
         else:
-            Kv_add = hf_val / (kv2g * Qobj**2)
-            estado_d = "Se añade pérdida en válvula para que la CCI pase por (Q_obj, H_bomba(Q_obj))."
-
-        # ----- Texto largo ----- #
-        self.text_res.configure(state="normal"); self.text_res.delete("1.0", "end")
-        self.text_res.insert("end", "[a] Curva característica (CCI):\n")
-        self.text_res.insert("end", f"    Hmi(Q) = {z:.2f} + {(1+kc)*kv2g:.6e}·Q^2 + {Jtot:.6e}·Q^1.852   (Q en l/s, H en m)\n")
-        self.text_res.insert("end", f"    (C_HW≈{C_HW:.0f}, J_ℓ={J_lps:.6e}/m; Dp={Dp_m*1000:.0f} mm, Le={Le:.0f} m, Dc={Dc_m*1000:.0f} mm, kc={kc:.2f})\n\n")
-        self.text_res.insert("end", f"[b] h≥{h8:.1f} m → Q_min≈{Q_min8:.2f} l/s; Hmi(Q_min)≈{Hmin8:.2f} m\n\n")
-        self.text_res.insert("end", f"[c] Q≈{Qpf:.2f} l/s, H≈{Hpf:.2f} m, η≈{etapf*100:.1f} %, P_abs≈{Pabs_kW:.2f} kW, coste≈{coste_eur_m3:.4f} €/m³ (precio={precio:.2f} €/kWh)\n\n")
-        self.text_res.insert("end", f"[d] h_obj={hobj:.1f} m → Q_obj≈{Qobj:.2f} l/s; H_bomba≈{H_bomb_obj:.2f} m, Hmi_base≈{H_inst_base:.2f} m\n")
-        if hf_val >= 0:
-            self.text_res.insert("end", f"    hf_val≈{hf_val:.2f} m  (K_equiv≈{Kv_add:.2f})\n")
-        else:
-            self.text_res.insert("end", f"    {estado_d}\n")
-        self.text_res.configure(state="disabled")
-
-        # ----- Resultados cortos ----- #
-        self._set_text(self.txt_a, f"[a] Hmi(Q)={z:.2f}+{(1+kc)*kv2g:.6e}·Q²+{Jtot:.6e}·Q^1.852  (C_HW≈{C_HW:.0f}, J_ℓ={J_lps:.6e}/m)\n")
-        self._set_text(self.txt_b, f"[b] Q_min≈{Q_min8:.2f} l/s; Hmi(Q_min)≈{Hmin8:.2f} m\n")
-        self._set_text(self.txt_c, f"[c] Q≈{Qpf:.2f} l/s, H≈{Hpf:.2f} m, η≈{etapf*100:.1f} %, P_abs≈{Pabs_kW:.2f} kW, coste≈{coste_eur_m3:.4f} €/m³\n")
-        if hf_val >= 0:
-            self._set_text(self.txt_d, f"[d] Q_obj≈{Qobj:.2f} l/s → hf_val≈{hf_val:.2f} m  (K_equiv≈{Kv_add:.2f})\n")
-        else:
-            self._set_text(self.txt_d, f"[d] {estado_d}\n")
-
-        # ----- Gráfica Q-H ----- #
-        self.ax.cla()
-        self.ax.grid(True)
-        self.ax.set_xlabel("Q (l/s)")
-        self.ax.set_ylabel("H (m)")
-        self.ax.set_title("Curvas características – 9.2")
-
-        Hcci = [self.H_inst(q, z, J_lps, Le, kv2g, kc, Kv_add=0.0) for q in self.Q_plot]
-        self.ax.plot(self.Q_plot, Hcci, label="CCI instalación", linewidth=2)
-        self.ax.plot(Qb_ls, Hb_m, "o-", label="Curva de la bomba", linewidth=2)
-        self.ax.plot([Qpf], [Hpf], "s", markersize=8, label="Punto de funcionamiento")
-
-        # Marcadores objetivo d)
-        self.ax.axvline(Qobj, linestyle="--", linewidth=1)
-        self.ax.plot([Qobj], [H_bomb_obj], "D", markersize=7, label="Bomba @ Q_obj")
-        self.ax.plot([Qobj], [H_inst_base], "^", markersize=7, label="CCI base @ Q_obj")
-
-        self.ax.set_xlim(0, 100)
-        ymax = max(max(Hb_m), max(Hcci), H_bomb_obj, Hpf) * 1.15
-        self.ax.set_ylim(0, max(25.0, ymax))
-        self.ax.legend(loc="best")
-
-        # ----- Chorro dinámico ----- #
-        h_pf = kv2g * (Qpf**2)  # altura real del chorro en el punto de funcionamiento
-        self._draw_jet(h_pf, hobj)
-
-        self.canvas.draw_idle()
+            render_everything()
 
     # -------------------- Acciones varias -------------------- #
     def limpiar(self):
@@ -475,6 +592,7 @@ class App(ctk.CTk):
         self.text_res.delete("1.0", "end")
         self.text_res.insert("end", "Pulsa ‘Calcular’ en la pestaña Interactivo.\n")
         self.text_res.configure(state="disabled")
+        self._update_pump_bar()
 
     def guardar_grafica(self):
         try:
@@ -490,7 +608,7 @@ class App(ctk.CTk):
         except Exception as e:
             messagebox.showerror("Error al guardar", str(e))
 
-# --------- Entrada por main() (para selector) --------- #
+# --------- Entrada por main() --------- #
 def main():
     App().mainloop()
 
