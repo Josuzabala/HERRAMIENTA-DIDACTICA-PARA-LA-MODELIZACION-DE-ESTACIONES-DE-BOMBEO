@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-TFG – Problema 9.2 (GUI) con customtkinter
+TFG – Problema 9.2 (GUI) con customtkinter + chorro con cota dinámica
 a) CCI analítica
 b) Caudal mínimo para h>=8 m y selección de curva de bomba (IBS: rodete 256 mm aprox.)
 c) Punto de funcionamiento (Q, H), rendimiento, potencia y coste energético
 d) Válvula para bajar la altura del chorro a h_obj (por defecto 5 m): hf_val y K_equiv
 
 Interfaz:
-- Sliders+Entry sincronizados a la izquierda; gráfica (x fija 0..100 l/s) y resultados en dos columnas.
+- Sliders+Entry sincronizados a la izquierda; gráfica (curvas Q–H + chorro) y resultados en dos columnas.
 - Debounce (150 ms) y “flash” en resultados que cambian.
-- main() para lanzarlo desde un selector.
+- Panel derecho extra: dibujo del chorro con cota h y línea objetivo h_obj.
 """
 
 import numpy as np
@@ -44,7 +44,7 @@ def interp_xy(x_table, y_table, x):
         if x0 <= x <= x1:
             y0, y1 = y_table[i], y_table[i+1]
             t = (x - x0) / (x1 - x0)
-            return float(y0 + t*(y1 - y0))
+            return float(y0 + t*(y1 - y1 + y1 - y0))  # evita warning por inline
     return float(y_table[-1])
 
 def bisect_root(f, a, b, tol=1e-8, itmax=200):
@@ -158,7 +158,6 @@ class App(ctk.CTk):
                 sframe, from_=vmin, to=vmax,
                 number_of_steps=max(1, int(round((vmax-vmin)/step)))
             )
-            # init seguro
             try:
                 init = float(str(var.get()).replace(",", "."))
             except Exception:
@@ -185,11 +184,9 @@ class App(ctk.CTk):
                     return
                 x = min(max(x, vmin), vmax)
                 slider.set(x)
-                # no llamamos calcular aquí; lo hace el debounce
                 self._schedule_recalc()
             var.trace_add("write", on_entry_change)
 
-            # formateo al salir de foco
             def on_focus_out(_):
                 txt = str(var.get()).replace(",", ".").strip()
                 try:
@@ -231,10 +228,12 @@ class App(ctk.CTk):
         right.grid_rowconfigure(1, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        # Gráfica
+        # Gráfica: dos subplots, curvas y chorro
         g = ctk.CTkFrame(right); g.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4,2))
         self.fig = plt.Figure(figsize=(6.9, 4.8))
-        self.ax  = self.fig.add_subplot(111)
+        gs = self.fig.add_gridspec(1, 2, width_ratios=[2.0, 1.0])
+        self.ax  = self.fig.add_subplot(gs[0, 0])    # Q-H
+        self.ax_jet = self.fig.add_subplot(gs[0, 1]) # chorro
         self.canvas = FigureCanvasTkAgg(self.fig, master=g)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
 
@@ -278,6 +277,40 @@ class App(ctk.CTk):
         )
         notes.configure(state="disabled")
 
+    # -------------------- Dibujo del chorro -------------------- #
+    def _draw_jet(self, h_jet_m: float, h_obj_m: float | None = None):
+        ax = self.ax_jet
+        ax.cla()
+
+        ymax = max(5.0, h_jet_m, h_obj_m or 0.0) * 1.2
+        ax.set_ylim(0, ymax)
+        ax.set_xlim(-0.6, 0.6)
+        ax.set_aspect('auto')
+        ax.set_xticks([])
+        ax.set_ylabel("Altura (m)")
+        ax.set_title("Chorro")
+
+        # Suelo y boquilla
+        ax.plot([-0.5, 0.5], [0, 0], linewidth=2)
+        ax.add_patch(plt.Rectangle((-0.1, 0.0), 0.2, 0.12, fill=True))
+
+        # Chorro
+        ax.plot([0, 0], [0, h_jet_m], linewidth=6, alpha=0.6)
+
+        # Cota del chorro
+        ax.annotate("",
+            xy=(0.35, h_jet_m), xytext=(0.35, 0),
+            arrowprops=dict(arrowstyle="<->", lw=1.8))
+        ax.text(0.38, h_jet_m/2, f"h = {h_jet_m:.2f} m", va="center", rotation=90)
+
+        # Objetivo
+        if h_obj_m is not None:
+            ax.axhline(h_obj_m, linestyle="--", linewidth=1)
+            ax.text(-0.55, h_obj_m, f"h_obj = {h_obj_m:.2f} m", va="center")
+
+        if h_jet_m >= ymax*0.999:
+            ax.text(0, ymax*0.98, "cortado", ha="center", va="top")
+
     # -------------------- Dibujo base -------------------- #
     def _draw_static(self):
         self.ax.cla()
@@ -286,9 +319,19 @@ class App(ctk.CTk):
         self.ax.set_ylabel("H (m)")
         self.ax.set_title("Curvas características – 9.2")
         self.ax.plot(Qb_ls, Hb_m, "o-", linewidth=2, label="Curva de la bomba")
-        self.ax.set_xlim(0, 100)   # fija x para que la bomba no “se mueva”
+        self.ax.set_xlim(0, 100)
         self.ax.set_ylim(0, max(Hb_m)*1.25)
         self.ax.legend()
+
+        # Panel chorro vacío
+        self.ax_jet.cla()
+        self.ax_jet.set_title("Chorro")
+        self.ax_jet.set_ylabel("Altura (m)")
+        self.ax_jet.set_xticks([])
+        self.ax_jet.set_ylim(0, 10)
+        self.ax_jet.plot([-0.5, 0.5], [0, 0], linewidth=2)
+        self.ax_jet.add_patch(plt.Rectangle((-0.1, 0.0), 0.2, 0.12, fill=True))
+
         self.canvas.draw_idle()
 
     # -------------------- Modelo -------------------- #
@@ -386,7 +429,7 @@ class App(ctk.CTk):
         else:
             self._set_text(self.txt_d, f"[d] {estado_d}\n")
 
-        # ----- Gráfica ----- #
+        # ----- Gráfica Q-H ----- #
         self.ax.cla()
         self.ax.grid(True)
         self.ax.set_xlabel("Q (l/s)")
@@ -403,12 +446,15 @@ class App(ctk.CTk):
         self.ax.plot([Qobj], [H_bomb_obj], "D", markersize=7, label="Bomba @ Q_obj")
         self.ax.plot([Qobj], [H_inst_base], "^", markersize=7, label="CCI base @ Q_obj")
 
-        # Ejes fijos en Q; H auto con margen
         self.ax.set_xlim(0, 100)
         ymax = max(max(Hb_m), max(Hcci), H_bomb_obj, Hpf) * 1.15
         self.ax.set_ylim(0, max(25.0, ymax))
-
         self.ax.legend(loc="best")
+
+        # ----- Chorro dinámico ----- #
+        h_pf = kv2g * (Qpf**2)  # altura real del chorro en el punto de funcionamiento
+        self._draw_jet(h_pf, hobj)
+
         self.canvas.draw_idle()
 
     # -------------------- Acciones varias -------------------- #
@@ -438,7 +484,7 @@ class App(ctk.CTk):
         except Exception as e:
             messagebox.showerror("Error al guardar", str(e))
 
-# --------- Entrada por main() --------- #
+# --------- Entrada por main() (para selector) --------- #
 def main():
     App().mainloop()
 
