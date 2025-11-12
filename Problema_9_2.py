@@ -140,7 +140,7 @@ class App(ctk.CTk):
         self.Dc_var    = ctk.StringVar(value="80")    # mm boquilla
         self.kc_var    = ctk.StringVar(value="0.8")
         self.h8_var    = ctk.StringVar(value="8.0")   # m
-        self.hobj_var  = ctk.StringVar(value="5.0")   # m
+        self.hobj_var  = ctk.StringVar(value="8.0")   # m
         self.precio_var= ctk.StringVar(value="0.11")  # €/kWh
 
         ctk.CTkLabel(controls, text="Parámetros", font=self.font_h1).pack(anchor="w", padx=8, pady=(8, 6))
@@ -308,6 +308,12 @@ class App(ctk.CTk):
             ax.axhline(h_obj_m, linestyle="--", linewidth=1)
             ax.text(-0.55, h_obj_m, f"h_obj = {h_obj_m:.2f} m", va="center")
 
+        # Si la potencia del chorro no alcanza la altura objetivo
+        if h_obj_m is not None and h_jet_m < h_obj_m:
+            ax.text(0, ymax*0.9, "⚠ Potencia del chorro insuficiente",
+                    color="red", ha="center", va="top", fontsize=11, weight="bold")
+
+        # Si se corta el eje
         if h_jet_m >= ymax*0.999:
             ax.text(0, ymax*0.98, "cortado", ha="center", va="top")
 
