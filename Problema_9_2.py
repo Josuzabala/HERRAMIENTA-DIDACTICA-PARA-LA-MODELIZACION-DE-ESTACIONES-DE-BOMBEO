@@ -535,6 +535,18 @@ class App(ctk.CTk):
             self._set_text(self.txt_b, f"[b] Q_min≈{Q_min8:.2f} l/s; Hmi(Q_min)≈{Hmin8:.2f} m\n"
                                        f"    Bomba activa: rodete {int(self.active_D)} mm\n")
             self._set_text(self.txt_c, f"[c] Q≈{Qpf:.2f} l/s, H≈{Hpf:.2f} m, η≈{etapf*100:.1f} %, P_abs≈{Pabs_kW:.2f} kW, coste≈{coste_eur_m3:.4f} €/m³\n")
+            # <-- Añadir este bloque para mostrar siempre d)
+            if hf_val >= 0:
+                self._set_text(
+                    self.txt_d,
+                    f"[d] Q_obj≈{Qobj:.2f} l/s → hf_val≈{hf_val:.2f} m  (K_equiv≈{Kv_add:.2f})\n"
+                )
+            else:
+                self._set_text(
+                    self.txt_d,
+                    f"[d] {estado_d}\n"
+                )
+
             self._update_pump_bar()
 
             # Gráfica Q-H
