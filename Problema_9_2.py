@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-TFG – Problema 9.2 (GUI) - Versión Optimizada Tutora V2
+TFG – Problema 9.2 (GUI) - Refactorizado
 
-Cambios:
-- Gráfica más grande (zoom centrado en la intersección).
-- Redistribución de resultados: A y B a la izquierda, C y D a la derecha.
-- Aprovechamiento del espacio (cuadros de texto más ajustados).
-- Panel izquierdo fijo y estético.
+Mejoras implementadas:
+1. Panel de Control:
+   - Datos geométricos (z, Dp, Le, eps, Dc, kc) fijos (solo lectura).
+   - Deslizadores activos solo para: s, h_min, h_obj, Precio.
+   - Rangos ajustados (h_min [5,10], h_obj independiente).
+2. Gráfica:
+   - Se muestran los 5 rodetes (Activo: Naranja grueso, Resto: Gris discontinuo).
+   - Zoom inteligente centrado en el P.F.
+3. Diseño:
+   - Resultados texto reorganizados (A,B izq / C,D der).
+   - Pestaña Resultados: Dashboard visual con tarjetas.
 """
 
 import numpy as np
@@ -20,6 +26,7 @@ ctk.set_default_color_theme("blue")
 
 # ---------------- Utilidades hidráulicas ---------------- #
 def hazen_williams_k_per_length(D_m: float, C: float) -> float:
+    """hf = k_L * L * Q^1.852  (Q en m3/s, L en m, hf en m)"""
     return 10.67 / (C**1.852 * D_m**4.87)
 
 def choose_CHW_from_eps_over_D(eps_cm: float, D_m: float) -> float:
@@ -54,9 +61,9 @@ def bisect_root(f, a, b, tol=1e-8, itmax=200):
     return 0.5*(a+b)
 
 # ----------- Curva base de bomba (IBS 9.2 ~ rodete 256 mm) ----------- #
-Qb_base_ls = np.array([40, 50, 60, 70, 80, 90], dtype=float)
-Hb_base_m  = np.array([22, 22, 22, 21.8, 21.0, 19.7], dtype=float)
-eta_base   = np.array([0.72, 0.76, 0.79, 0.78, 0.76, 0.72], dtype=float)
+Qb_base_ls = np.array([40, 50, 60, 70, 80, 90], dtype=float)  # l/s
+Hb_base_m  = np.array([22, 22, 22, 21.8, 21.0, 19.7], dtype=float)  # m
+eta_base   = np.array([0.72, 0.76, 0.79, 0.78, 0.76, 0.72], dtype=float)  # fracción
 D_BASE_MM  = 256.0
 
 RODETES_MM = [225.0, 235.0, 245.0, 256.0, 266.0]
@@ -72,11 +79,11 @@ def gen_curve_for_diameter(D_mm: float):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Problema 9.2 – Fuente de chorro vertical (GUI)")
+        self.title("Problema 9.2 – Fuente de chorro vertical (GUI Refactorizada)")
         self.geometry("1280x900")
         self.minsize(1120, 800)
 
-        self.Q_plot = np.linspace(0.0, 140.0, 500)  # Rango amplio para cálculos
+        self.Q_plot = np.linspace(0.0, 100.0, 400)  # l/s
         self._update_job = None
 
         # Estado de bomba activa
@@ -84,9 +91,19 @@ class App(ctk.CTk):
         self.pump_curves = {D: gen_curve_for_diameter(D) for D in RODETES_MM}
 
         # Fuentes
-        self.font_h1 = ctk.CTkFont(family="Segoe UI", size=18, weight="bold")
-        self.font_h2 = ctk.CTkFont(family="Segoe UI", size=15, weight="bold")
-        self.font_body = ctk.CTkFont(family="Segoe UI", size=13)
+        self.font_h1 = ctk.CTkFont(family="Segoe UI", size=20, weight="bold")
+        self.font_h2 = ctk.CTkFont(family="Segoe UI", size=16, weight="bold")
+        self.font_body = ctk.CTkFont(family="Segoe UI", size=14)
+        
+        # Variables para Dashboard (Resultados)
+        self.res_Q = ctk.StringVar(value="-")
+        self.res_H = ctk.StringVar(value="-")
+        self.res_Eta = ctk.StringVar(value="-")
+        self.res_Pot = ctk.StringVar(value="-")
+        self.res_Coste = ctk.StringVar(value="-")
+        self.res_Coste_Hora = ctk.StringVar(value="-")
+        self.res_Bomba = ctk.StringVar(value="-")
+        self.res_DeltaH = ctk.StringVar(value="-")
 
         # Pestañas
         self.tabs = ctk.CTkTabview(self)
@@ -96,7 +113,7 @@ class App(ctk.CTk):
         self.tab_notas = self.tabs.add("Notas")
 
         self._build_interactivo()
-        self._build_resultados()
+        self._build_resultados_dashboard()
         self._build_notas()
 
         self._draw_static()
@@ -134,184 +151,364 @@ class App(ctk.CTk):
         root.grid_columnconfigure(1, weight=1)
         root.grid_rowconfigure(0, weight=1)
 
-        # Columna izquierda: controles + botones
-        leftcol = ctk.CTkFrame(root, width=380)
-        leftcol.grid(row=0, column=0, sticky="nsw", padx=(0, 10), pady=0)
+        # Columna izquierda con dos filas: controles scroll + botones fijos
+        leftcol = ctk.CTkFrame(root)
+        leftcol.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
+        leftcol.grid_rowconfigure(0, weight=1)  # scrollable ocupa todo
+        leftcol.grid_rowconfigure(1, weight=0)  # botones fijos abajo
         leftcol.grid_columnconfigure(0, weight=1)
 
-        controls = ctk.CTkFrame(leftcol, fg_color="transparent")
-        controls.pack(fill="x", expand=False, pady=(0, 10))
+        # Controles scrollables
+        controls = ctk.CTkScrollableFrame(leftcol, width=440)
+        controls.grid(row=0, column=0, sticky="nsew")
 
         # Variables por defecto
-        self.defaults = dict(
-            s="1.0", z="3.0", Dp="175", Le="75", eps="0.015",
-            Dc="80", kc="0.8", h8="8.0", hobj="8.0", precio="0.11"
-        )
-        self.s_var     = ctk.StringVar(value=self.defaults["s"])
-        self.z_var     = ctk.StringVar(value=self.defaults["z"])
-        self.Dp_var    = ctk.StringVar(value=self.defaults["Dp"])
-        self.Le_var    = ctk.StringVar(value=self.defaults["Le"])
-        self.eps_var   = ctk.StringVar(value=self.defaults["eps"])
-        self.Dc_var    = ctk.StringVar(value=self.defaults["Dc"])
-        self.kc_var    = ctk.StringVar(value=self.defaults["kc"])
-        self.h8_var    = ctk.StringVar(value=self.defaults["h8"])
-        self.hobj_var  = ctk.StringVar(value=self.defaults["hobj"])
-        self.precio_var= ctk.StringVar(value=self.defaults["precio"])
-
-        # --- SECCIÓN 1: CONSTANTES ---
-        ctk.CTkLabel(controls, text="Datos Fijos (Enunciado)", font=self.font_h2).pack(anchor="w", padx=8, pady=(8, 4))
-        grid_const = ctk.CTkFrame(controls)
-        grid_const.pack(fill="x", padx=6, pady=4)
+        # Geometricas (FIJAS)
+        self.geo_vals = dict(z="3.00", Dp="175", Le="75", eps="0.015", Dc="80", kc="0.8")
         
-        def add_const_box(parent, r, c, label, var_name, unit):
-            f = ctk.CTkFrame(parent, fg_color="#EBEBEB", corner_radius=6)
-            f.grid(row=r, column=c, padx=4, pady=4, sticky="ew")
-            ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=11), text_color="gray30").pack()
-            ctk.CTkLabel(f, text=f"{self.defaults[var_name]} {unit}", font=ctk.CTkFont(size=14, weight="bold"), text_color="black").pack()
+        # Variables operativas (SLIDERS)
+        self.defaults = dict(s="1.0", h8="8.0", hobj="8.0", precio="0.11")
+        self.s_var      = ctk.StringVar(value=self.defaults["s"])
+        self.h8_var     = ctk.StringVar(value=self.defaults["h8"])
+        self.hobj_var   = ctk.StringVar(value=self.defaults["hobj"])
+        self.precio_var = ctk.StringVar(value=self.defaults["precio"])
 
-        grid_const.grid_columnconfigure((0,1), weight=1)
-        add_const_box(grid_const, 0, 0, "z (Elevación)", "z", "m")
-        add_const_box(grid_const, 0, 1, "D tubería", "Dp", "mm")
-        add_const_box(grid_const, 1, 0, "L equivalente", "Le", "m")
-        add_const_box(grid_const, 1, 1, "Rugosidad", "eps", "cm")
-        add_const_box(grid_const, 2, 0, "D boquilla", "Dc", "mm")
-        add_const_box(grid_const, 2, 1, "k boquilla", "kc", "")
+        # 1. SECCIÓN DATOS FIJOS (Solo Lectura)
+        ctk.CTkLabel(controls, text="Datos del Enunciado (Fijos)", font=self.font_h1).pack(anchor="w", padx=8, pady=(8, 6))
+        
+        fixed_frame = ctk.CTkFrame(controls, fg_color="#F8F8F8", corner_radius=6)
+        fixed_frame.pack(fill="x", padx=8, pady=(0, 10))
+        
+        # Grid para datos fijos
+        for i, (lbl, val, unit) in enumerate([
+            ("Cota z (A)", self.geo_vals["z"], "m"),
+            ("D tubería",  self.geo_vals["Dp"], "mm"),
+            ("L equiv.",   self.geo_vals["Le"], "m"),
+            ("Rugosidad ε",self.geo_vals["eps"], "cm"),
+            ("D boquilla", self.geo_vals["Dc"], "mm"),
+            ("k boquilla", self.geo_vals["kc"], "-")
+        ]):
+            r, c = divmod(i, 2)
+            f = ctk.CTkFrame(fixed_frame, fg_color="transparent")
+            f.grid(row=r, column=c, sticky="ew", padx=10, pady=5)
+            ctk.CTkLabel(f, text=lbl, font=ctk.CTkFont(size=12, weight="bold"), text_color="gray").pack(anchor="w")
+            ctk.CTkLabel(f, text=f"{val} {unit}", font=ctk.CTkFont(size=14), text_color="#333").pack(anchor="w")
+        
+        fixed_frame.grid_columnconfigure((0,1), weight=1)
 
-        # --- SECCIÓN 2: VARIABLES (SLIDERS) ---
-        ctk.CTkLabel(controls, text="Variables de Diseño", font=self.font_h2).pack(anchor="w", padx=8, pady=(12, 4))
+        # 2. SECCIÓN VARIABLES (Sliders)
+        ctk.CTkLabel(controls, text="Variables de Diseño", font=self.font_h1).pack(anchor="w", padx=8, pady=(8, 6))
 
-        def add_entry_slider(parent, label, var, unit, vmin, vmax, step, fmt, trace_cb=None):
+        def add_entry_slider(parent, label, var, unit, vmin, vmax, step, fmt):
             row = ctk.CTkFrame(parent); row.pack(fill="x", padx=6, pady=(6,0))
             ctk.CTkLabel(row, text=label, font=self.font_body).grid(row=0, column=0, sticky="w")
             ctk.CTkLabel(row, text=unit,  font=self.font_body).grid(row=0, column=2, sticky="w", padx=(6,0))
+
             sframe = ctk.CTkFrame(parent); sframe.pack(fill="x", padx=6, pady=(2,10))
             sframe.grid_columnconfigure(0, weight=1)
-            slider = ctk.CTkSlider(sframe, from_=vmin, to=vmax, number_of_steps=max(1, int(round((vmax-vmin)/step))))
+
+            slider = ctk.CTkSlider(
+                sframe, from_=vmin, to=vmax,
+                number_of_steps=max(1, int(round((vmax-vmin)/step)))
+            )
             try: init = float(str(var.get()).replace(",", "."))
             except: init = vmin
             slider.set(min(max(init, vmin), vmax))
             slider.grid(row=0, column=0, sticky="ew", padx=(4,6), pady=2)
+
             ent = ctk.CTkEntry(sframe, textvariable=var, width=80, justify="right")
             ent.grid(row=0, column=1, sticky="e")
 
             def on_slide(val):
-                var.set(fmt.format(val))
-                if trace_cb: trace_cb()
-                self._schedule_recalc()
+                var.set(fmt.format(val)); self._schedule_recalc()
             slider.configure(command=on_slide)
-            
+
             def on_entry_change(*_):
-                try: x = float(str(var.get()).replace(",", "."))
-                except: return
-                slider.set(min(max(x, vmin), vmax))
-                if trace_cb: trace_cb()
-                self._schedule_recalc()
+                try: 
+                    x = float(str(var.get()).replace(",", "."))
+                    slider.set(min(max(x, vmin), vmax))
+                    self._schedule_recalc()
+                except: pass
             var.trace_add("write", on_entry_change)
-            return ent, slider
+            
+            return slider
 
-        add_entry_slider(controls, "s (densidad relativa)", self.s_var, "-", 0.80, 1.40, 0.01, "{:.2f}")
+        # Sliders solicitados
+        self.slider_s = add_entry_slider(controls, "Densidad rel. (s)", self.s_var, "-",      0.80, 1.40, 0.01, "{:.2f}")
+        self.slider_h8 = add_entry_slider(controls, "h mínima (b)",      self.h8_var, "m",     5.00, 10.0, 0.10, "{:.2f}")
+        self.slider_hobj = add_entry_slider(controls, "h objetivo (d)",    self.hobj_var,"m",    5.00, 10.0, 0.10, "{:.2f}")
+        self.slider_precio = add_entry_slider(controls, "Precio energía",    self.precio_var,"€/kWh", 0.00, 0.50, 0.01, "{:.2f}")
 
-        def sync_h_obj(*args):
-            try: self.hobj_var.set(self.h8_var.get())
-            except: pass
-        add_entry_slider(controls, "h mínima (b)", self.h8_var, "m", 5.00, 10.0, 0.10, "{:.2f}", trace_cb=sync_h_obj)
-
-        row_obj = ctk.CTkFrame(controls)
-        row_obj.pack(fill="x", padx=6, pady=(0, 10))
-        ctk.CTkLabel(row_obj, text="↳ h objetivo (d) [AUTO]", font=self.font_body, text_color="gray").pack(side="left")
-        ctk.CTkEntry(row_obj, textvariable=self.hobj_var, width=80, justify="right", state="disabled", fg_color="#EEEEEE", text_color="gray40").pack(side="right")
+        # Sincronizar h_objetivo con h_minima
+        def sync_hobj_to_h8(*args):
+            """Cuando cambia h_objetivo, actualizar h_minima (valor Y slider)"""
+            try:
+                hobj_val = float(self.hobj_var.get().replace(",", "."))
+                self.h8_var.set(f"{hobj_val:.2f}")
+                self.slider_h8.set(hobj_val)  # Mover también el slider de h_minima
+            except:
+                pass
         
-        add_entry_slider(controls, "Precio energía", self.precio_var, "€/kWh", 0.00, 0.50, 0.01, "{:.2f}")
+        self.hobj_var.trace_add("write", sync_hobj_to_h8)
 
+        # Botonera fija (no scroll)
         btnrow = ctk.CTkFrame(leftcol)
-        btnrow.pack(fill="x", pady=(20,0))
+        btnrow.grid(row=1, column=0, sticky="ew", pady=(8,0))
         btnrow.grid_columnconfigure((0,1,2), weight=1)
-        ctk.CTkButton(btnrow, text="Calcular", command=self.calcular).grid(row=0, column=0, sticky="ew", padx=4, pady=4)
-        ctk.CTkButton(btnrow, text="Reiniciar", command=self.reiniciar_valores).grid(row=0, column=1, sticky="ew", padx=4, pady=4)
-        ctk.CTkButton(btnrow, text="Guardar", command=self.guardar_grafica).grid(row=0, column=2, sticky="ew", padx=4, pady=4)
 
-        # Lado derecho: Estructura Principal
+        ctk.CTkButton(btnrow, text="Calcular", command=self.calcular).grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+        ctk.CTkButton(btnrow, text="Reiniciar valores", command=self.reiniciar_valores).grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+        ctk.CTkButton(btnrow, text="Guardar gráfica", command=self.guardar_grafica).grid(row=0, column=2, sticky="ew", padx=4, pady=4)
+
+        # Lado derecho: gráfica + resultados
         right = ctk.CTkFrame(root)
         right.grid(row=0, column=1, sticky="nsew")
-        # Damos mucho más peso a la fila 0 (gráfica) para que coma sitio a los resultados
-        right.grid_rowconfigure(0, weight=10) 
+        right.grid_rowconfigure(0, weight=4)
         right.grid_rowconfigure(1, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        # 1. Gráfica (Grande)
+        # Gráfica: dos subplots, curvas y chorro
         g = ctk.CTkFrame(right); g.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4,2))
-        self.fig = plt.Figure(figsize=(7.2, 5.5)) # Ligeramente más alta
-        gs = self.fig.add_gridspec(1, 2, width_ratios=[2.5, 1.0])
-        self.ax  = self.fig.add_subplot(gs[0, 0])
-        self.ax_jet = self.fig.add_subplot(gs[0, 1])
+        self.fig = plt.Figure(figsize=(7.2, 4.9))
+        gs = self.fig.add_gridspec(1, 2, width_ratios=[2.0, 1.0])
+        self.ax  = self.fig.add_subplot(gs[0, 0])    # Q-H
+        self.ax_jet = self.fig.add_subplot(gs[0, 1]) # chorro
         self.canvas = FigureCanvasTkAgg(self.fig, master=g)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
+
+        # Badge dinámico
         self.badge_artist = None
 
-        # 2. Resultados (Divididos Izq/Der)
-        res = ctk.CTkFrame(right)
-        res.grid(row=1, column=0, sticky="nsew", padx=4, pady=(2,4))
-        res.grid_columnconfigure(0, weight=1)
-        res.grid_columnconfigure(1, weight=1)
-        res.grid_rowconfigure(0, weight=1)
-
-        # Columna Izquierda (A, B)
-        col_left = ctk.CTkFrame(res, fg_color="transparent")
-        col_left.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        # Resultados organizados (A,B Izq | C,D Der)
+        res = ctk.CTkFrame(right); res.grid(row=1, column=0, sticky="nsew", padx=4, pady=(2,4))
+        res.grid_columnconfigure(0, weight=1); res.grid_columnconfigure(1, weight=1)
         
-        ctk.CTkLabel(col_left, text="Resultados A y B", font=self.font_h1).pack(anchor="w", padx=4)
-        self.txt_a = ctk.CTkTextbox(col_left, height=60, font=self.font_body) # Altura reducida
-        self.txt_a.pack(fill="x", padx=4, pady=(2,4))
+        # Columna Izquierda (A y B)
+        c_left = ctk.CTkFrame(res, fg_color="transparent"); c_left.grid(row=0, column=0, sticky="nsew", padx=4)
+        ctk.CTkLabel(c_left, text="A) Curva Instalación y B) Selección Bomba", font=self.font_h2).pack(anchor="w", pady=2)
         
-        self.txt_b = ctk.CTkTextbox(col_left, height=50, font=self.font_body)
-        self.txt_b.pack(fill="x", padx=4, pady=(2,4))
+        self.txt_ab = ctk.CTkTextbox(c_left, font=self.font_body, height=120)
+        self.txt_ab.pack(fill="both", expand=True, pady=2)
         
-        self.pump_bar = ctk.CTkFrame(col_left)
-        self.pump_bar.pack(fill="x", padx=4, pady=2)
-        ctk.CTkLabel(self.pump_bar, text="Bombas disponibles:", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=4)
+        # Barra de bombas dentro de la col izq
+        self.pump_bar = ctk.CTkFrame(c_left); self.pump_bar.pack(fill="x", pady=4)
+        ctk.CTkLabel(self.pump_bar, text="Bombas disponibles:", font=ctk.CTkFont(size=12)).pack(anchor="w")
         self.pump_labels = {}
-        row_p = ctk.CTkFrame(self.pump_bar, fg_color="transparent")
-        row_p.pack(fill="x", pady=2)
+        row_pump = ctk.CTkFrame(self.pump_bar); row_pump.pack(fill="x")
         for D in RODETES_MM:
-            lbl = ctk.CTkLabel(row_p, text=f"{int(D)}", corner_radius=6, padx=6, pady=2, font=ctk.CTkFont(size=11))
-            lbl.pack(side="left", padx=2)
+            lbl = ctk.CTkLabel(row_pump, text=f"{int(D)}", corner_radius=6, width=40, font=ctk.CTkFont(size=11))
+            lbl.pack(side="left", padx=2, pady=2)
             self.pump_labels[D] = lbl
 
-        # Columna Derecha (C, D)
-        col_right = ctk.CTkFrame(res, fg_color="transparent")
-        col_right.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
+        # Columna Derecha (C y D)
+        c_right = ctk.CTkFrame(res, fg_color="transparent"); c_right.grid(row=0, column=1, sticky="nsew", padx=4)
+        ctk.CTkLabel(c_right, text="C) Punto Func. y D) Regulación", font=self.font_h2).pack(anchor="w", pady=2)
         
-        ctk.CTkLabel(col_right, text="Resultados C y D", font=self.font_h1).pack(anchor="w", padx=4)
-        self.txt_c = ctk.CTkTextbox(col_right, height=60, font=self.font_body)
-        self.txt_c.pack(fill="x", padx=4, pady=(2,4))
-        
-        self.txt_d = ctk.CTkTextbox(col_right, height=60, font=self.font_body) # Altura reducida
-        self.txt_d.pack(fill="x", padx=4, pady=(2,4))
+        self.txt_cd = ctk.CTkTextbox(c_right, font=self.font_body, height=150)
+        self.txt_cd.pack(fill="both", expand=True, pady=2)
 
         # Inicializar textos
-        for tb in (self.txt_a, self.txt_b, self.txt_c, self.txt_d):
-            tb.insert("end", "Pendiente...\n")
-            tb.configure(state="disabled")
+        for tb in (self.txt_ab, self.txt_cd):
+            tb.insert("end", "Calculando...\n"); tb.configure(state="disabled")
 
-    # -------------------- TAB: RESULTADOS -------------------- #
-    def _build_resultados(self):
-        box = ctk.CTkFrame(self.tab_res); box.pack(fill="both", expand=True, padx=8, pady=8)
-        self.text_res = ctk.CTkTextbox(box, font=self.font_body)
-        self.text_res.pack(fill="both", expand=True, padx=8, pady=8)
-        self.text_res.insert("end", "Pulsa ‘Calcular’ en la pestaña Interactivo.\n")
-        self.text_res.configure(state="disabled")
+    # -------------------- TAB: RESULTADOS (DASHBOARD) -------------------- #
+    def _build_resultados_dashboard(self):
+        self.dash = ctk.CTkScrollableFrame(self.tab_res, fg_color="#F5F5F5")
+        self.dash.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # KPI Helper con fondos de color
+        def create_kpi(parent, label, variable, unit, col, colspan=1, color="#1F6AA5", bg_color="#FFFFFF", icon=""):
+            f = ctk.CTkFrame(parent, fg_color=bg_color, corner_radius=12, border_width=2, border_color="#E0E0E0")
+            f.grid(row=0, column=col, columnspan=colspan, sticky="ew", padx=8, pady=8)
+            for i in range(colspan):
+                parent.grid_columnconfigure(col+i, weight=1)
+            
+            # Icono y label
+            header = ctk.CTkFrame(f, fg_color="transparent")
+            header.pack(pady=(12,0))
+            if icon:
+                ctk.CTkLabel(header, text=icon, font=ctk.CTkFont(size=16)).pack(side="left", padx=(0,4))
+            ctk.CTkLabel(header, text=label, font=ctk.CTkFont(size=11, weight="bold"), text_color="#666").pack(side="left")
+            
+            # Valor principal
+            ctk.CTkLabel(f, textvariable=variable, font=ctk.CTkFont(size=32, weight="bold"), text_color=color).pack(pady=(2,2))
+            
+            # Unidad
+            ctk.CTkLabel(f, text=unit, font=ctk.CTkFont(size=13), text_color="#999").pack(pady=(0,12))
+            
+            return f
+
+        # Tarjeta 1: Punto de Funcionamiento (Púrpura)
+        card1 = ctk.CTkFrame(self.dash, fg_color="transparent")
+        card1.pack(fill="x", pady=(0,15))
+        
+        header1 = ctk.CTkFrame(card1, fg_color="#9B59B6", corner_radius=8, height=50)
+        header1.pack(fill="x", pady=(0,10))
+        header1.pack_propagate(False)
+        ctk.CTkLabel(header1, text="⚙️  PUNTO DE FUNCIONAMIENTO", font=self.font_h1, text_color="white").pack(pady=12)
+        
+        grid1 = ctk.CTkFrame(card1, fg_color="transparent")
+        grid1.pack(fill="x")
+        create_kpi(grid1, "CAUDAL", self.res_Q, "l/s", 0, color="#9B59B6", bg_color="#E8D5F0", icon="💧")
+        create_kpi(grid1, "ALTURA", self.res_H, "m", 1, color="#9B59B6", bg_color="#E8D5F0", icon="📏")
+        create_kpi(grid1, "RENDIMIENTO", self.res_Eta, "%", 2, color="#9B59B6", bg_color="#E8D5F0", icon="⚡")
+        
+        # Tarjeta 2: Energía y Costes (Naranja)
+        card2 = ctk.CTkFrame(self.dash, fg_color="transparent")
+        card2.pack(fill="x", pady=(0,15))
+        
+        header2 = ctk.CTkFrame(card2, fg_color="#FF9800", corner_radius=8, height=50)
+        header2.pack(fill="x", pady=(0,10))
+        header2.pack_propagate(False)
+        ctk.CTkLabel(header2, text="💰  ENERGÍA Y COSTES", font=self.font_h1, text_color="white").pack(pady=12)
+        
+        grid2 = ctk.CTkFrame(card2, fg_color="transparent")
+        grid2.pack(fill="x")
+        create_kpi(grid2, "POTENCIA", self.res_Pot, "kW", 0, color="#FF9800", bg_color="#FFE0B2", icon="⚡")
+        create_kpi(grid2, "COSTE/VOLUMEN", self.res_Coste, "€/m³", 1, color="#FF9800", bg_color="#FFE0B2", icon="💵")
+        create_kpi(grid2, "COSTE/HORA", self.res_Coste_Hora, "€/h", 2, color="#FF9800", bg_color="#FFE0B2", icon="🕐")
+        
+        # Tarjeta 3: Equipamiento (Azul)
+        card3 = ctk.CTkFrame(self.dash, fg_color="transparent")
+        card3.pack(fill="x", pady=(0,15))
+        
+        header3 = ctk.CTkFrame(card3, fg_color="#2196F3", corner_radius=8, height=50)
+        header3.pack(fill="x", pady=(0,10))
+        header3.pack_propagate(False)
+        ctk.CTkLabel(header3, text="🔧  EQUIPAMIENTO Y REGULACIÓN", font=self.font_h1, text_color="white").pack(pady=12)
+        
+        grid3 = ctk.CTkFrame(card3, fg_color="transparent")
+        grid3.pack(fill="x")
+        
+        # KPI de bombas con selector visual
+        f_bomba = ctk.CTkFrame(grid3, fg_color="#BBDEFB", corner_radius=12, border_width=2, border_color="#E0E0E0")
+        f_bomba.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        grid3.grid_columnconfigure(0, weight=1)
+        
+        header_bomba = ctk.CTkFrame(f_bomba, fg_color="transparent")
+        header_bomba.pack(pady=(12,0))
+        ctk.CTkLabel(header_bomba, text="🔄", font=ctk.CTkFont(size=16)).pack(side="left", padx=(0,4))
+        ctk.CTkLabel(header_bomba, text="BOMBA SELECCIONADA", font=ctk.CTkFont(size=11, weight="bold"), text_color="#666").pack(side="left")
+        
+        # Contenedor de bombas
+        self.pump_display_frame = ctk.CTkFrame(f_bomba, fg_color="transparent")
+        self.pump_display_frame.pack(pady=(8,12))
+        
+        # Crear labels para cada bomba (se actualizarán en calcular)
+        self.pump_display_labels = {}
+        for D in RODETES_MM:
+            lbl = ctk.CTkLabel(self.pump_display_frame, text=f"{int(D)}", 
+                              font=ctk.CTkFont(size=16), text_color="#999")
+            lbl.pack(side="left", padx=4)
+            self.pump_display_labels[D] = lbl
+        
+        # ΔH con color dinámico (se actualizará en calcular)
+        self.kpi_deltah = create_kpi(grid3, "REGULACIÓN VÁLVULA (ΔH)", self.res_DeltaH, "m", 1, colspan=2, color="#4CAF50", bg_color="#C8E6C9", icon="🎚️")
+
+
 
     # -------------------- TAB: NOTAS -------------------- #
     def _build_notas(self):
-        notes = ctk.CTkTextbox(self.tab_notas, font=self.font_body)
-        notes.pack(fill="both", expand=True, padx=8, pady=8)
-        notes.insert("end", "Notas del problema 9.2...")
-        notes.configure(state="disabled")
+        main = ctk.CTkScrollableFrame(self.tab_notas, fg_color="#F5F5F5")
+        main.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        # Título principal
+        title_frame = ctk.CTkFrame(main, fg_color="#3F51B5", corner_radius=10, height=60)
+        title_frame.pack(fill="x", pady=(0,20))
+        title_frame.pack_propagate(False)
+        ctk.CTkLabel(title_frame, text="📚  NOTAS TÉCNICAS - PROBLEMA 9.2", 
+                    font=ctk.CTkFont(size=22, weight="bold"), text_color="white").pack(pady=15)
+        
+        # Sección 1: Ecuación de la Instalación
+        card1 = ctk.CTkFrame(main, fg_color="white", corner_radius=12, border_width=2, border_color="#E0E0E0")
+        card1.pack(fill="x", pady=(0,15))
+        
+        header1 = ctk.CTkFrame(card1, fg_color="#E3F2FD", corner_radius=8)
+        header1.pack(fill="x", padx=10, pady=10)
+        ctk.CTkLabel(header1, text="🔵  CURVA CARACTERÍSTICA DE LA INSTALACIÓN (CCI)", 
+                    font=ctk.CTkFont(size=14, weight="bold"), text_color="#1976D2").pack(pady=8, padx=10)
+        
+        content1 = ctk.CTkLabel(card1, 
+                               text="La altura manométrica de la instalación se calcula como:\n\n"
+                                    "   H_mi(Q) = z + (1 + k_c)·(V_c²/2g) + hf_tubería(Q)\n\n"
+                                    "Donde:\n"
+                                    "  • z: Cota geométrica (altura estática)\n"
+                                    "  • V_c²/2g: Altura de velocidad en la boquilla = k_v2g·Q²\n"
+                                    "  • hf_tubería: Pérdidas por fricción (Hazen-Williams)",
+                               font=ctk.CTkFont(family="Consolas", size=13), 
+                               text_color="#333", justify="left")
+        content1.pack(fill="x", padx=15, pady=(0,15), anchor="w")
+        
+        # Sección 2: Pérdidas en tubería
+        card2 = ctk.CTkFrame(main, fg_color="white", corner_radius=12, border_width=2, border_color="#E0E0E0")
+        card2.pack(fill="x", pady=(0,15))
+        
+        header2 = ctk.CTkFrame(card2, fg_color="#FFF3E0", corner_radius=8)
+        header2.pack(fill="x", padx=10, pady=10)
+        ctk.CTkLabel(header2, text="🟠  PÉRDIDAS POR FRICCIÓN (HAZEN-WILLIAMS)", 
+                    font=ctk.CTkFont(size=14, weight="bold"), text_color="#F57C00").pack(pady=8, padx=10)
+        
+        content2 = ctk.CTkLabel(card2,
+                               text="Las pérdidas por fricción se calculan con:\n\n"
+                                    "   hf_tubería = (J_ℓ · L) · Q^1.852\n\n"
+                                    "Donde J_ℓ es el coeficiente unitario de Hazen-Williams\n"
+                                    "que depende del diámetro D y el coeficiente C_HW (rugosidad).",
+                               font=ctk.CTkFont(family="Consolas", size=13),
+                               text_color="#333", justify="left")
+        content2.pack(fill="x", padx=15, pady=(0,15), anchor="w")
+        
+        # Sección 3: Selección de bomba
+        card3 = ctk.CTkFrame(main, fg_color="white", corner_radius=12, border_width=2, border_color="#E0E0E0")
+        card3.pack(fill="x", pady=(0,15))
+        
+        header3 = ctk.CTkFrame(card3, fg_color="#E8F5E9", corner_radius=8)
+        header3.pack(fill="x", padx=10, pady=10)
+        ctk.CTkLabel(header3, text="🟢  SELECCIÓN DE BOMBA (APARTADO B)", 
+                    font=ctk.CTkFont(size=14, weight="bold"), text_color="#388E3C").pack(pady=8, padx=10)
+        
+        content3 = ctk.CTkLabel(card3,
+                               text="Criterio de selección:\n\n"
+                                    "1. Calcular Q_min a partir de h_mínima: Q_min = √(h_min / k_v2g)\n"
+                                    "2. Calcular H_requerida en ese caudal\n"
+                                    "3. Seleccionar la bomba MÁS PEQUEÑA que cumpla:\n"
+                                    "      H_bomba(Q_min) ≥ H_requerida",
+                               font=ctk.CTkFont(family="Consolas", size=13),
+                               text_color="#333", justify="left")
+        content3.pack(fill="x", padx=15, pady=(0,15), anchor="w")
+        
+        # Sección 4: Regulación con válvula
+        card4 = ctk.CTkFrame(main, fg_color="white", corner_radius=12, border_width=2, border_color="#E0E0E0")
+        card4.pack(fill="x", pady=(0,15))
+        
+        header4 = ctk.CTkFrame(card4, fg_color="#F3E5F5", corner_radius=8)
+        header4.pack(fill="x", padx=10, pady=10)
+        ctk.CTkLabel(header4, text="🟣  REGULACIÓN CON VÁLVULA (APARTADO D)", 
+                    font=ctk.CTkFont(size=14, weight="bold"), text_color="#7B1FA2").pack(pady=8, padx=10)
+        
+        content4 = ctk.CTkLabel(card4,
+                               text="Para alcanzar una altura objetivo h_obj:\n\n"
+                                    "1. Calcular Q_obj = √(h_obj / k_v2g)\n"
+                                    "2. Determinar H_bomba(Q_obj) y H_sistema(Q_obj)\n"
+                                    "3. La válvula debe disipar:\n"
+                                    "      ΔH = H_bomba(Q_obj) - H_sistema(Q_obj)\n\n"
+                                    "Si ΔH < 0 → IMPOSIBLE (bomba insuficiente)",
+                               font=ctk.CTkFont(family="Consolas", size=13),
+                               text_color="#333", justify="left")
+        content4.pack(fill="x", padx=15, pady=(0,15), anchor="w")
+        
+        # Footer con información adicional
+        footer = ctk.CTkFrame(main, fg_color="#ECEFF1", corner_radius=10)
+        footer.pack(fill="x", pady=(5,0))
+        ctk.CTkLabel(footer, text="💡 Tip: Usa los sliders en la pestaña 'Interactivo' para explorar diferentes configuraciones", 
+                    font=ctk.CTkFont(size=12, slant="italic"), text_color="#546E7A").pack(pady=12, padx=15)
 
-    # -------------------- Dibujo Chorro -------------------- #
+
+
+    # -------------------- Dibujo del chorro -------------------- #
     def _draw_jet(self, h_jet_m: float, h_obj_m: float | None = None):
         ax = self.ax_jet
         ax.cla()
+
         ymax = max(5.0, h_jet_m, h_obj_m or 0.0) * 1.2
         ax.set_ylim(0, ymax)
         ax.set_xlim(-0.6, 0.6)
@@ -319,73 +516,191 @@ class App(ctk.CTk):
         ax.set_xticks([])
         ax.set_ylabel("Altura (m)")
         ax.set_title("Chorro")
-        ax.plot([-0.5, 0.5], [0, 0], linewidth=2, color="black")
-        ax.add_patch(plt.Rectangle((-0.1, 0.0), 0.2, 0.12, fill=True, color="gray"))
-        ax.plot([0, 0], [0, h_jet_m], linewidth=6, alpha=0.85, solid_capstyle="round", color="tab:blue")
-        if h_obj_m:
-            ax.axhline(h_obj_m, linestyle="--", linewidth=1.2, color="red")
-            ax.text(-0.55, h_obj_m, f"h_obj", va="center", color="red", fontsize=8)
-        if h_obj_m and h_jet_m < h_obj_m:
-            ax.text(0, ymax*0.92, "!", color="red", ha="center", weight="bold", fontsize=14)
 
-    # -------------------- Dibujo Estático -------------------- #
+        # Suelo y boquilla
+        ax.plot([-0.5, 0.5], [0, 0], linewidth=2)
+        ax.add_patch(plt.Rectangle((-0.1, 0.0), 0.2, 0.12, fill=True))
+
+        # Chorro en azul
+        ax.plot([0, 0], [0, h_jet_m], linewidth=6, alpha=0.85, solid_capstyle="round", color="tab:blue")
+
+        # Cota
+        ax.annotate("", xy=(0.35, h_jet_m), xytext=(0.35, 0), arrowprops=dict(arrowstyle="<->", lw=1.8))
+        ax.text(0.38, h_jet_m/2, f"h={h_jet_m:.2f}m", va="center", rotation=90, bbox=dict(facecolor="white", alpha=0.6))
+
+        # Objetivo
+        if h_obj_m is not None:
+            ax.axhline(h_obj_m, linestyle="--", linewidth=1.2, color="red")
+            ax.text(-0.55, h_obj_m, f"Obj={h_obj_m:.2f}m", va="center", color="red")
+
+        if h_obj_m is not None and h_jet_m < h_obj_m:
+            ax.text(0, ymax*0.92, "⚠ Altura insuficiente", color="red", ha="center", va="top", fontsize=10, weight="bold")
+
+    # -------------------- Dibujo base -------------------- #
     def _draw_static(self):
+        self._plot_with_zoom(None, None)
+
+    def _plot_with_zoom(self, Qpf, Hpf, reg_data=None):
         self.ax.cla()
-        self.ax.grid(True)
+        self.ax.grid(True, linestyle=":", alpha=0.6)
         self.ax.set_xlabel("Q (l/s)")
         self.ax.set_ylabel("H (m)")
-        self.ax.set_title("Curvas características – 9.2")
-        
-        # Dibujar familia completa
-        for D in RODETES_MM:
+        self.ax.set_title("Familia de Bombas vs Instalación")
+
+        # Configurar limites Zoom o Full
+        if Qpf is not None:
+            span_q = 55; span_h = 25
+            x_min = max(0, Qpf - span_q/2)
+            x_max = x_max_raw = x_min + span_q
+            
+            y_min = max(0, Hpf - span_h/2)
+            y_max = y_min + span_h
+            
+            # Si hay regulación, expandir vista para incluir toda la línea roja
+            if reg_data:
+                Qo, H_sys_o, H_pump_o = reg_data
+                # Expandir X
+                if Qo < x_min: x_min = max(0, Qo - 5)
+                if Qo > x_max: x_max = Qo + 5
+                # Expandir Y (con margen para texto)
+                if H_sys_o < y_min: y_min = max(0, H_sys_o - 2)
+                if H_pump_o > y_max: y_max = H_pump_o + 4 # margen superior para texto deltaH
+
+            self.ax.set_xlim(x_min, x_max)
+            self.ax.set_ylim(y_min, y_max)
+        else:
+            x_min, x_max = 0, 100
+            self.ax.set_xlim(0, 100)
+            self.ax.set_ylim(0, 45)
+
+        # Dibujar TODAS las bombas con etiquetas distribuidas
+        for idx, D in enumerate(RODETES_MM):
             Qc, Hc, _ = self.pump_curves[D]
+            
             if D == self.active_D:
-                self.ax.plot(Qc, Hc, "-", linewidth=3.0, color="tab:orange", label=f"Rodete {int(D)}", zorder=5)
+                color = "tab:orange"; lw = 3; ls = "-"
+                lbl_legend = "Bomba Activa"
             else:
-                self.ax.plot(Qc, Hc, "--", linewidth=1.0, alpha=0.4, color="gray", zorder=2)
-        
-        self.ax.set_xlim(0, 100)
-        self.ax.set_ylim(0, 50)
-        self._update_badge()
+                color = "gray"; lw = 1; ls = "--"
+                lbl_legend = None 
+                
+            self.ax.plot(Qc, Hc, ls=ls, lw=lw, color=color, alpha=0.6, label=lbl_legend)
+            
+            # Etiqueta: usar diferentes posiciones X para evitar solapamiento
+            # Distribuir entre 70% y 95% del rango visible
+            x_range = x_max - x_min
+            # Posicionar cada etiqueta en un punto diferente de la curva
+            label_x_fraction = 0.70 + (idx * 0.06)  # 0.70, 0.76, 0.82, 0.88, 0.94
+            x_lbl = x_min + x_range * label_x_fraction
+            
+            # Verificar que x_lbl esté dentro del rango de la curva Y del viewport
+            # Usar un rango más amplio para asegurar visibilidad
+            if Qc[0] <= x_lbl <= Qc[-1]:
+                y_lbl = interp_xy(Qc, Hc, x_lbl)
+                ylim = self.ax.get_ylim()
+                # Rango más permisivo para asegurar que las etiquetas aparezcan
+                if (ylim[0] - 8) <= y_lbl <= (ylim[1] + 8):
+                    self.ax.text(x_lbl, y_lbl, f"R-{int(D)}", 
+                                 fontsize=8, color=color, va="bottom", ha="center", 
+                                 weight="bold", clip_on=False,  # clip_on=False para forzar visibilidad
+                                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", 
+                                          edgecolor=color, alpha=0.8, linewidth=0.5))
+
+        # Si hay Qpf, dibujar CCI y Punto
+        if Qpf is not None:
+            parsed = self._parse_and_get_params()
+            if parsed:
+                 _, _, J_lps, Le, kv2g, kc, z = parsed
+                 Hcci = [z + (1+kc)*kv2g*(q**2) + (J_lps*Le)*(q**1.852) for q in self.Q_plot]
+                 self.ax.plot(self.Q_plot, Hcci, "-", linewidth=2, color="tab:blue", label="Curva Sistema")
+                 
+                 # Punto de funcionamiento con color magenta suave
+                 self.ax.plot([Qpf], [Hpf], "o", markersize=12, color="#9B59B6", 
+                              markeredgecolor="white", markeredgewidth=2.5, zorder=11, label="Pto. Funcionamiento")
+                 
+                 # LINEA DE REGULACION (d) - SIEMPRE VISIBLE EN VERDE
+                 if reg_data:
+                     Qo, H_sys_o, H_pump_o = reg_data
+                     # Línea verde sólida vertical
+                     self.ax.vlines(x=Qo, ymin=H_sys_o, ymax=H_pump_o, colors="green", linestyles="-", linewidth=2.5, label="Regulación (Válvula)", zorder=9)
+                     self.ax.plot([Qo], [H_pump_o], "o", color="green", markersize=6, zorder=10)
+                     self.ax.plot([Qo], [H_sys_o], "o", color="green", markersize=6, zorder=10)
+                     
+                     # Texto delta H centrado o mensaje IMPOSIBLE
+                     mid_y = (H_sys_o + H_pump_o)/2
+                     delta_h = H_pump_o - H_sys_o
+                     
+                     # Ajustar alineación según donde esté Qpf
+                     ha_txt = "right" if Qo < Qpf else "left"
+                     off_x = -1.0 if Qo < Qpf else 1.0
+                     
+                     # Si delta_h es negativo, mostrar IMPOSIBLE
+                     if delta_h < 0:
+                         txt_label = "IMPOSIBLE"
+                         txt_color = "red"
+                         edge_color = "red"
+                     else:
+                         txt_label = f"ΔH={delta_h:.2f}m"
+                         txt_color = "green"
+                         edge_color = "green"
+                     
+                     self.ax.text(Qo + off_x, mid_y, txt_label, 
+                                  color=txt_color, fontsize=10, ha=ha_txt, va="center", weight="bold",
+                                  bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=edge_color, alpha=0.9))
+
+        self.ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
         self.canvas.draw_idle()
 
-    # -------------------- Animación -------------------- #
+    # -------------------- Animación cambio de bomba -------------------- #
     def _animate_pump_switch(self, new_D_mm: float, on_done):
-        # Versión simple para no molestar
         win = ctk.CTkToplevel(self)
-        win.title("...")
-        win.geometry("200x60")
+        win.title("CAMBIANDO BOMBA…")
+        win.geometry("360x100")
+        win.resizable(False, False)
         win.transient(self)
-        ctk.CTkLabel(win, text=f"Cambiando a {int(new_D_mm)} mm").pack(pady=10)
-        self.after(500, lambda: [win.destroy(), on_done()])
+        win.grab_set()
+
+        ctk.CTkLabel(win, text=f"Seleccionando rodete óptimo: {int(new_D_mm)} mm", font=self.font_h2).pack(pady=(15, 5))
+        pb = ctk.CTkProgressBar(win)
+        pb.pack(fill="x", padx=20, pady=5)
+        pb.set(0.0)
+
+        steps, i = 25, 0 
+        def tick():
+            nonlocal i
+            i += 1
+            pb.set(i/steps)
+            if i < steps:
+                win.after(15, tick)
+            else:
+                try: win.destroy()
+                except: pass
+                on_done()
+        tick()
 
     # -------------------- Lógica -------------------- #
-    def _parse(self):
+    def _parse_and_get_params(self):
+        # Lee de Textvars y constantes
         try:
             s = float(self.s_var.get().replace(",", "."))
-            z = float(self.z_var.get().replace(",", "."))
-            Dp_m = float(self.Dp_var.get().replace(",", "."))/1000.0
-            Le = float(self.Le_var.get().replace(",", "."))
-            eps = float(self.eps_var.get().replace(",", "."))
-            Dc_m = float(self.Dc_var.get().replace(",", "."))/1000.0
-            kc = float(self.kc_var.get().replace(",", "."))
-            h8 = float(self.h8_var.get().replace(",", "."))
-            hobj = h8
-            precio = float(self.precio_var.get().replace(",", "."))
-            return s, z, Dp_m, Le, eps, Dc_m, kc, h8, hobj, precio
+            # Geo fixed
+            z = float(self.geo_vals["z"])
+            Dp_m = float(self.geo_vals["Dp"])/1000.0
+            Le = float(self.geo_vals["Le"])
+            eps_cm = float(self.geo_vals["eps"])
+            Dc_m = float(self.geo_vals["Dc"])/1000.0
+            kc = float(self.geo_vals["kc"])
+            
+            # Derived
+            C = choose_CHW_from_eps_over_D(eps_cm, Dp_m)
+            kL = hazen_williams_k_per_length(Dp_m, C)
+            J_lps = kL / (1000.0**1.852)
+            
+            A = np.pi*(Dc_m**2)/4.0
+            kv2g = (1e-6) / (2*9.81*(A**2))
+            
+            return s, C, J_lps, Le, kv2g, kc, z
         except: return None
-
-    def _J_unit_lps(self, Dp_m, eps_cm):
-        C = choose_CHW_from_eps_over_D(eps_cm, Dp_m)
-        kL = hazen_williams_k_per_length(Dp_m, C)
-        return C, kL / (1000.0**1.852)
-
-    def _kv2g_from_Dc(self, Dc_m):
-        A = np.pi*(Dc_m**2)/4.0
-        return (1e-6) / (2*9.81*(A**2))
-
-    def H_inst(self, Q_lps, z, J_lps, L, kv2g, kc, Kv_add=0.0):
-        return z + (1.0 + kc + Kv_add) * kv2g * (Q_lps**2) + (J_lps*L) * (Q_lps**1.852)
 
     def Hb_activa(self, Ql):
         Qc, Hc, _ = self.pump_curves[self.active_D]
@@ -395,24 +710,12 @@ class App(ctk.CTk):
         Qc, _, eta = self.pump_curves[self.active_D]
         return float(interp_xy(Qc, eta, Ql))
 
-    def _select_pump_for_requirement(self, Qmin, Hneed, margin=0.05):
-        feasible = []
-        for D in RODETES_MM:
-            Qc, Hc, _ = self.pump_curves[D]
-            Hb_at_Qmin = interp_xy(Qc, Hc, Qmin)
-            if Hb_at_Qmin >= Hneed*(1+margin):
-                feasible.append(D)
-        if feasible:
-            chosen = min(feasible)
-            return chosen, (chosen != self.active_D), True
-        return max(RODETES_MM), (max(RODETES_MM) != self.active_D), False
-
     def _update_pump_bar(self):
         for D, lbl in self.pump_labels.items():
             if D == self.active_D:
-                lbl.configure(fg_color="#4CAF50", text_color="white")
+                lbl.configure(fg_color="#3B8ED0", text_color="white") # Azul activo
             else:
-                lbl.configure(fg_color="#E0E0E0", text_color="gray")
+                lbl.configure(fg_color="#E0E0E0", text_color="black")
 
     def _update_badge(self):
         if self.badge_artist:
@@ -420,123 +723,170 @@ class App(ctk.CTk):
             except: pass
         self.badge_artist = self.ax.text(
             0.98, 0.98, f"Rodete {int(self.active_D)}",
-            transform=self.ax.transAxes, ha="right", va="top", fontsize=10,
-            bbox=dict(facecolor="white", alpha=0.8, boxstyle="round,pad=0.2")
+            transform=self.ax.transAxes, ha="right", va="top",
+            bbox=dict(facecolor="#3B8ED0", alpha=0.9, boxstyle="round,pad=0.3"),
+            color="white", weight="bold"
         )
 
     def calcular(self):
-        parsed = self._parse()
-        if not parsed: return
-        s, z, Dp_m, Le, eps_cm, Dc_m, kc, h8, hobj, precio = parsed
-        C_HW, J_lps = self._J_unit_lps(Dp_m, eps_cm)
-        kv2g = self._kv2g_from_Dc(Dc_m)
-        Jtot = J_lps * Le
+        # 1. Leer inputs
+        try:
+            s_val = float(self.s_var.get().replace(",", "."))
+            h8  = float(self.h8_var.get().replace(",", "."))
+            hobj= float(self.hobj_var.get().replace(",", "."))
+            pr  = float(self.precio_var.get().replace(",", "."))
+        except: return 
+        
+        params = self._parse_and_get_params()
+        if not params: return
+        s, C, J_lps, Le, kv2g, kc, z = params
 
-        Q_min8 = np.sqrt(h8 / kv2g)
-        Hmin8  = self.H_inst(Q_min8, z, J_lps, Le, kv2g, kc)
-        new_D, changed, feasible = self._select_pump_for_requirement(Q_min8, Hmin8)
+        # 2. SELECCIÓN DE BOMBA (Apartado B)
+        # H_requerida para Q_min (h8)
+        Q_min = np.sqrt(h8 / kv2g)
+        H_req_min = z + (1+kc)*kv2g*(Q_min**2) + (J_lps*Le)*(Q_min**1.852)
+        
+        # Buscar en catálogo
+        best_D = RODETES_MM[-1]; found = False
+        for D in RODETES_MM:
+            Qc, Hc, _ = self.pump_curves[D]
+            H_disp = interp_xy(Qc, Hc, Q_min)
+            if H_disp >= H_req_min * 1.0: # SIN margen (antes 1.05 = 5%)
+                best_D = D
+                found = True
+                break
+        
+        # Si cambia bomba, animar y volver
+        if best_D != self.active_D:
+            self.active_D = best_D
+            self._animate_pump_switch(best_D, self.calcular)
+            return
 
-        def render_everything():
-            self.active_D = new_D
-            self._update_pump_bar()
+        self._update_pump_bar()
 
-            def equilibrio(q): return self.Hb_activa(q) - self.H_inst(q, z, J_lps, Le, kv2g, kc)
-            Qpf = bisect_root(equilibrio, 0.0, 140.0)
-            if Qpf is None: return
-            Hpf = self.Hb_activa(Qpf)
-            etapf = self.eta_activa(Qpf)
-            Pabs_kW = (9800.0 * s) * (Qpf/1000.0) * Hpf / max(etapf,1e-9) / 1000.0
-            coste = (Pabs_kW / (Qpf*3.6)) * precio
+        # 3. GUI CHECK (No redibujar excesivamente si es auto-update)
+        # Simplemente procedemos al cálculo
+        
+        # C) PUNTO DE FUNCIONAMIENTO
+        def func_bal(q):
+            # H_bomba - H_sistema
+            H_b = self.Hb_activa(q)
+            H_s = z + (1+kc)*kv2g*(q**2) + (J_lps*Le)*(q**1.852)
+            return H_b - H_s
+        
+        Qpf = bisect_root(func_bal, 0.1, 150)
+        if Qpf is None: Qpf = 0.0
+        
+        Hpf = self.Hb_activa(Qpf)
+        eta_pf = self.eta_activa(Qpf)
+        
+        gamma = 9800.0 * s_val
+        Pabs_kW = gamma*(Qpf/1000.0)*Hpf / (max(eta_pf, 0.01)) / 1000.0
+        coste = (Pabs_kW / (Qpf*3.6)) * pr if Qpf>0 else 0
 
-            Qobj = np.sqrt(hobj / kv2g)
-            H_inst_base = self.H_inst(Qobj, z, J_lps, Le, kv2g, kc)
-            H_bomb_obj  = self.Hb_activa(Qobj)
-            hf_val = H_bomb_obj - H_inst_base
-            Kv_add = hf_val / (kv2g * Qobj**2) if hf_val >= 0 else 0
-
-            # --- Textos Optimizados ---
-            self._set_text(self.txt_a, f"[a] CCI: H={z:.1f}+{(1+kc)*kv2g:.5f}Q²+{Jtot:.5f}Q^1.85\n    (C={C_HW:.0f}, J={J_lps:.5f}/m)")
-            self._set_text(self.txt_b, f"[b] Q_min={Q_min8:.1f} l/s → H_req={Hmin8:.1f} m\n    Bomba: {int(self.active_D)} mm")
-            self._set_text(self.txt_c, f"[c] Pto func: {Qpf:.1f} l/s @ {Hpf:.1f} m\n    η={etapf*100:.1f}%, Coste={coste:.4f}€/m³")
-            
-            if hf_val >= 0:
-                self._set_text(self.txt_d, f"[d] Para h_obj={hobj:.1f}m (Q={Qobj:.1f}l/s):\n    Cerrar válvula: ΔH={hf_val:.2f} m")
-            else:
-                self._set_text(self.txt_d, f"[d] Imposible alcanzar {hobj:.1f}m\n    con esta bomba.")
-
-            # --- GRÁFICA ZOOM ---
-            self.ax.cla()
-            self.ax.grid(True, linestyle=":", alpha=0.7)
-            self.ax.set_xlabel("Q (l/s)")
-            self.ax.set_ylabel("H (m)")
-            
-            # Dibujar todas las bombas
-            for D in RODETES_MM:
-                Qc, Hc, _ = self.pump_curves[D]
-                if D == self.active_D:
-                    self.ax.plot(Qc, Hc, "-", lw=3, color="tab:orange", zorder=5)
-                else:
-                    self.ax.plot(Qc, Hc, "--", lw=1, alpha=0.3, color="gray", zorder=2)
-
-            # CCI
-            Hcci = [self.H_inst(q, z, J_lps, Le, kv2g, kc) for q in self.Q_plot]
-            self.ax.plot(self.Q_plot, Hcci, label="CCI", lw=2, color="tab:blue", zorder=4)
-
-            # Punto funcionamiento
-            self.ax.plot([Qpf], [Hpf], "s", markersize=8, color="black", zorder=6)
-            
-            # Punto D (Objetivo)
-            if hf_val >= 0:
-                 self.ax.plot([Qobj], [H_bomb_obj], "D", markersize=6, color="green", zorder=6)
-                 self.ax.vlines(Qobj, H_inst_base, H_bomb_obj, colors="red", linestyles="solid", lw=2, label="Válvula")
-
-            # **ZOOM INTELIGENTE**
-            # Centramos en Qpf. Mostramos +/- 35 l/s y +/- 15 m
-            q_center = Qpf
-            h_center = Hpf
-            
-            margin_q = 35
-            margin_h = 15
-
-            self.ax.set_xlim(max(0, q_center - margin_q), q_center + margin_q)
-            self.ax.set_ylim(max(0, h_center - margin_h), h_center + margin_h)
-            
-            self._update_badge()
-            self._draw_jet(kv2g * (Qpf**2), hobj)
-            self.canvas.draw_idle()
-
-        if changed:
-            self._animate_pump_switch(new_D, render_everything)
+        # D) REGULACIÓN VÁLVULA
+        # Q necesario para h_obj
+        Q_obj = np.sqrt(hobj / kv2g)
+        H_bomb_obj = self.Hb_activa(Q_obj)
+        H_syst_base = z + (1+kc)*kv2g*(Q_obj**2) + (J_lps*Le)*(Q_obj**1.852)
+        
+        hf_valv = H_bomb_obj - H_syst_base
+        aviso_d = ""
+        if hf_valv < 0:
+            aviso_d = "IMPOSIBLE: Bomba insuficiente para h_obj."
         else:
-            render_everything()
+            aviso_d = f"Válvula debe disipar {hf_valv:.2f} m."
+
+        # --- ACTUALIZAR DASHBOARD ---
+        self.res_Q.set(f"{Qpf:.2f}")
+        self.res_H.set(f"{Hpf:.2f}")
+        self.res_Eta.set(f"{eta_pf*100:.1f}")
+        self.res_Pot.set(f"{Pabs_kW:.2f}")
+        self.res_Coste.set(f"{coste:.4f}")
+        
+        # Coste por hora (más interpretable)
+        coste_hora = Pabs_kW * pr if Qpf > 0 else 0
+        self.res_Coste_Hora.set(f"{coste_hora:.3f}")
+        
+        self.res_Bomba.set(f"{int(self.active_D)}")
+        
+        # Actualizar selector visual de bombas
+        for D, lbl in self.pump_display_labels.items():
+            if D == self.active_D:
+                lbl.configure(text_color="#2196F3", font=ctk.CTkFont(size=20, weight="bold"))
+            else:
+                lbl.configure(text_color="#999", font=ctk.CTkFont(size=16))
+        
+        # Delta H para válvula con color dinámico
+        delta_h_valv = H_bomb_obj - H_syst_base
+        if delta_h_valv >= 0:
+            self.res_DeltaH.set(f"{delta_h_valv:.2f}")
+            # Actualizar color del KPI a verde
+            try:
+                self.kpi_deltah.configure(fg_color="#C8E6C9")  # Verde claro
+                for widget in self.kpi_deltah.winfo_children():
+                    if isinstance(widget, ctk.CTkLabel) and widget.cget("font").cget("size") == 32:
+                        widget.configure(text_color="#4CAF50")  # Verde
+            except: pass
+        else:
+            self.res_DeltaH.set("IMPOSIBLE")
+            # Actualizar color del KPI a rojo
+            try:
+                self.kpi_deltah.configure(fg_color="#FFCDD2")  # Rojo claro
+                for widget in self.kpi_deltah.winfo_children():
+                    if isinstance(widget, ctk.CTkLabel) and widget.cget("font").cget("size") == 32:
+                        widget.configure(text_color="#F44336")  # Rojo
+            except: pass
+
+        # --- ACTUALIZAR TEXTOS IZQ/DER ---
+        # Izquierda: A y B
+        txt_a = (
+            f"A) INSTALACIÓN:\n"
+            f"   Hmi = {z} + {(1+kc)*kv2g:.5f}Q² + {(J_lps*Le):.5f}Q^1.852\n"
+            f"   (C-HW: {C:.0f} para ε={self.geo_vals['eps']}cm)\n\n"
+            f"B) SELECCIÓN (h_min={h8}m):\n"
+            f"   Q_min = {Q_min:.2f} l/s -> H_req = {H_req_min:.2f} m\n"
+            f"   Rodete selec.: {int(best_D)} mm {'(Cumple)' if found else '(Max disp.)'}"
+        )
+        self._set_text(self.txt_ab, txt_a)
+
+        # Derecha: C y D
+        txt_cd = (
+            f"C) FUNCIONAMIENTO:\n"
+            f"   Q = {Qpf:.2f} l/s\n"
+            f"   H = {Hpf:.2f} mca\n"
+            f"   η = {eta_pf*100:.1f} %\n"
+            f"   Pot = {Pabs_kW:.2f} kW\n\n"
+            f"D) REGULACIÓN (h_obj={hobj}m):\n"
+            f"   Q_obj = {Q_obj:.2f} l/s\n"
+            f"   {aviso_d}"
+        )
+        self._set_text(self.txt_cd, txt_cd)
+
+        # Gráficas - ΔH siempre visible
+        reg_data = (Q_obj, H_syst_base, H_bomb_obj)
+        self._plot_with_zoom(Qpf, Hpf, reg_data=reg_data)
+        
+        # Chorro
+        h_real = kv2g * (Qpf**2)
+        self._draw_jet(h_real, hobj)
 
     def reiniciar_valores(self):
         self.s_var.set(self.defaults["s"])
-        self.z_var.set(self.defaults["z"])
-        self.Dp_var.set(self.defaults["Dp"])
-        self.Le_var.set(self.defaults["Le"])
-        self.eps_var.set(self.defaults["eps"])
-        self.Dc_var.set(self.defaults["Dc"])
-        self.kc_var.set(self.defaults["kc"])
         self.h8_var.set(self.defaults["h8"])
         self.hobj_var.set(self.defaults["hobj"])
         self.precio_var.set(self.defaults["precio"])
         self.active_D = 256.0
-        self._update_pump_bar()
-        self._draw_static()
-        for tb in (self.txt_a, self.txt_b, self.txt_c, self.txt_d):
-            tb.configure(state="normal"); tb.delete("1.0", "end"); tb.insert("end", "Pendiente...\n"); tb.configure(state="disabled")
+        self.calcular()
 
     def guardar_grafica(self):
         try:
             path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG", "*.png")])
-            if path:
-                self.fig.savefig(path, dpi=200, bbox_inches="tight")
-                messagebox.showinfo("OK", "Guardado.")
-        except: pass
-
-def main():
-    App().mainloop()
+            if path: 
+                self.fig.savefig(path, dpi=150)
+                messagebox.showinfo("Guardado", f"Imagen guardada en {path}")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
 if __name__ == "__main__":
-    main()
+    App().mainloop()
