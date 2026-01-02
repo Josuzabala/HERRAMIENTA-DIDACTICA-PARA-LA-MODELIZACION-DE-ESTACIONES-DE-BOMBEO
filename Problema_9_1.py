@@ -98,9 +98,12 @@ def hf_valve_from_Kv(Q_lps, s_rel, Kv_max_m3h, pct_open):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Problema 9.1 – Bombeo entre depósitos (GUI)")
+        self.title("Problema nº1: Bombeo entre depósitos")
         self.geometry("1200x900")
         self.minsize(1100, 800)
+        
+        # Maximizar ventana
+        self.after(0, lambda: self.state('zoomed'))
 
         # Estado hidráulico
         self.delta_z = 10.0
@@ -120,6 +123,13 @@ class App(ctk.CTk):
         self.tab_datos = self.tabs.add("Interactivo")
         self.tab_result = self.tabs.add("Resultados")
         self.tab_notas = self.tabs.add("Notas")
+        
+        # Botón volver al menú (esquina superior izquierda)
+        self.back_btn = ctk.CTkButton(self, text="← Volver al Menú", 
+                                       command=self._volver_menu,
+                                       width=140, height=32,
+                                       fg_color="#666666", hover_color="#444444")
+        self.back_btn.place(x=10, y=10)
 
         # --- VARIABLES PARA RESULTADOS (DASHBOARD) ---
         self.res_a_chw = ctk.StringVar(value="-")
@@ -628,7 +638,7 @@ class App(ctk.CTk):
 
     def _plot_curvas(self, k_lps, s, kvmax, open_pct, Qpf=None, Hpf=None):
         self.ax.cla(); self.ax.grid(True)
-        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("Hm (mcl)")
+        self.ax.set_xlabel(r"$Q$ (L/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.)")
         self.ax.set_title("Curvas características y punto de funcionamiento")
 
         Q_plot = self.Q_plot
@@ -639,14 +649,14 @@ class App(ctk.CTk):
 
         if open_pct == 0:
             # 1. Curva Base (discontinua)
-            self.ax.plot(Q_plot, H_inst_base, linestyle="--", color="tab:blue", label="CCI (válvula abierta 100%)", linewidth=1.5)
+            self.ax.plot(Q_plot, H_inst_base, linestyle="--", color="tab:blue", label=r"CCI (válvula abierta 100%)", linewidth=1.5)
             
             # 2. Curva Bomba
-            self.ax.plot(Qs, Hs, "o-", color="tab:green", label="CC bomba (1490 rpm)", linewidth=2)
+            self.ax.plot(Qs, Hs, "o-", color="tab:green", label=r"CC bomba (1490 rpm)", linewidth=2)
             
             # 3. LÍNEA VERTICAL INFINITA (resistencia infinita)
             y_techo = max(Hs) * 1.5 
-            self.ax.plot([0, 0], [self.delta_z, y_techo], color="tab:orange", linewidth=3, label="CCI con válvula (cerrada 0%)")
+            self.ax.plot([0, 0], [self.delta_z, y_techo], color="tab:orange", linewidth=3, label=r"CCI con válvula (cerrada 0%)")
             
             # Cartel rojo translúcido
             self.ax.text(
@@ -660,11 +670,11 @@ class App(ctk.CTk):
 
         else:
             H_inst = [self.H_inst_lps(q, k_lps, s, kvmax, open_pct) for q in Q_plot]
-            self.ax.plot(Q_plot, H_inst_base, linestyle="--", label="CCI sin válvula (apertura 100%)", linewidth=1.5)
-            self.ax.plot(Q_plot, H_inst, label=f"CCI con válvula (apertura {open_pct:.0f}%)", linewidth=2)
-            self.ax.plot(Qs, Hs, "o-", label="CC bomba (1490 rpm)", linewidth=2, color="tab:green")
+            self.ax.plot(Q_plot, H_inst_base, linestyle="--", label=r"CCI sin válvula (apertura 100%)", linewidth=1.5)
+            self.ax.plot(Q_plot, H_inst, label=rf"CCI con válvula (apertura {open_pct:.0f}%)", linewidth=2)
+            self.ax.plot(Qs, Hs, "o-", label=r"CC bomba (1490 rpm)", linewidth=2, color="tab:green")
             if Qpf is not None and Hpf is not None:
-                self.ax.plot([Qpf], [Hpf], "s", markersize=8, label="Punto de funcionamiento", color="tab:red")
+                self.ax.plot([Qpf], [Hpf], "s", markersize=8, label=r"Punto de funcionamiento", color="tab:red")
 
         # Cota piezométrica
         self.ax.axhline(self.delta_z, linestyle=":", linewidth=1, color="gray")
@@ -729,7 +739,7 @@ class App(ctk.CTk):
 
         # ---- Gráfica con PB ----
         self.ax.cla(); self.ax.grid(True)
-        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("H (m)")
+        self.ax.set_xlabel(r"$Q$ (L/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.)")
         self.ax.set_title("Efecto de presurizar el depósito B")
         Q_plot = self.Q_plot
         base = [self.H_inst_lps(q, self.k_lps, s, kvmax, open_pct) for q in Q_plot]
@@ -815,6 +825,14 @@ class App(ctk.CTk):
             messagebox.showinfo("OK", f"Gráfica guardada en:\n{path}")
         except Exception as e:
             messagebox.showerror("Error al guardar", str(e))
+    
+    def _volver_menu(self):
+        """Cierra esta ventana y abre el menú principal"""
+        import subprocess
+        import sys
+        self.destroy()
+        script_path = os.path.join(os.path.dirname(__file__), "menu_principal.py")
+        subprocess.Popen([sys.executable, script_path])
 
 def main():
     App().mainloop()

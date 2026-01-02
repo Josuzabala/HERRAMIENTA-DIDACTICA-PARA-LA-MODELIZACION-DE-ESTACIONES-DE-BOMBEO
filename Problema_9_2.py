@@ -79,9 +79,12 @@ def gen_curve_for_diameter(D_mm: float):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Problema 9.2 – Fuente de chorro vertical (GUI Refactorizada)")
+        self.title("Problema nº2: Fuente de Chorro")
         self.geometry("1280x900")
         self.minsize(1120, 800)
+        
+        # Maximizar ventana
+        self.after(0, lambda: self.state('zoomed'))
 
         self.Q_plot = np.linspace(0.0, 100.0, 400)  # l/s
         self._update_job = None
@@ -111,6 +114,13 @@ class App(ctk.CTk):
         self.tab_inter = self.tabs.add("Interactivo")
         self.tab_res   = self.tabs.add("Resultados")
         self.tab_notas = self.tabs.add("Notas")
+        
+        # Botón volver al menú
+        self.back_btn = ctk.CTkButton(self, text="← Volver al Menú", 
+                                       command=self._volver_menu,
+                                       width=140, height=32,
+                                       fg_color="#666666", hover_color="#444444")
+        self.back_btn.place(x=10, y=10)
 
         self._build_interactivo()
         self._build_resultados_dashboard()
@@ -514,7 +524,7 @@ class App(ctk.CTk):
         ax.set_xlim(-0.6, 0.6)
         ax.set_aspect('auto')
         ax.set_xticks([])
-        ax.set_ylabel("Altura (m)")
+        ax.set_ylabel(r"$H$ (m)")
         ax.set_title("Chorro")
 
         # Suelo y boquilla
@@ -526,12 +536,12 @@ class App(ctk.CTk):
 
         # Cota
         ax.annotate("", xy=(0.35, h_jet_m), xytext=(0.35, 0), arrowprops=dict(arrowstyle="<->", lw=1.8))
-        ax.text(0.38, h_jet_m/2, f"h={h_jet_m:.2f}m", va="center", rotation=90, bbox=dict(facecolor="white", alpha=0.6))
+        ax.text(0.38, h_jet_m/2, rf"$h={h_jet_m:.2f}$ m", va="center", rotation=90, bbox=dict(facecolor="white", alpha=0.6))
 
         # Objetivo
         if h_obj_m is not None:
             ax.axhline(h_obj_m, linestyle="--", linewidth=1.2, color="red")
-            ax.text(-0.55, h_obj_m, f"Obj={h_obj_m:.2f}m", va="center", color="red")
+            ax.text(-0.55, h_obj_m, rf"Obj$={h_obj_m:.2f}$ m", va="center", color="red")
 
         if h_obj_m is not None and h_jet_m < h_obj_m:
             ax.text(0, ymax*0.92, "⚠ Altura insuficiente", color="red", ha="center", va="top", fontsize=10, weight="bold")
@@ -543,8 +553,8 @@ class App(ctk.CTk):
     def _plot_with_zoom(self, Qpf, Hpf, reg_data=None):
         self.ax.cla()
         self.ax.grid(True, linestyle=":", alpha=0.6)
-        self.ax.set_xlabel("Q (l/s)")
-        self.ax.set_ylabel("H (m)")
+        self.ax.set_xlabel(r"$Q$ (L/s)")
+        self.ax.set_ylabel(r"$H$ (m)")
         self.ax.set_title("Familia de Bombas vs Instalación")
 
         # Configurar limites Zoom o Full
@@ -612,17 +622,17 @@ class App(ctk.CTk):
             if parsed:
                  _, _, J_lps, Le, kv2g, kc, z = parsed
                  Hcci = [z + (1+kc)*kv2g*(q**2) + (J_lps*Le)*(q**1.852) for q in self.Q_plot]
-                 self.ax.plot(self.Q_plot, Hcci, "-", linewidth=2, color="tab:blue", label="Curva Sistema")
+                 self.ax.plot(self.Q_plot, Hcci, "-", linewidth=2, color="tab:blue", label=r"Curva Sistema")
                  
                  # Punto de funcionamiento con color magenta suave
                  self.ax.plot([Qpf], [Hpf], "o", markersize=12, color="#9B59B6", 
-                              markeredgecolor="white", markeredgewidth=2.5, zorder=11, label="Pto. Funcionamiento")
+                              markeredgecolor="white", markeredgewidth=2.5, zorder=11, label=r"Pto. Funcionamiento")
                  
                  # LINEA DE REGULACION (d) - SIEMPRE VISIBLE EN VERDE
                  if reg_data:
                      Qo, H_sys_o, H_pump_o = reg_data
                      # Línea verde sólida vertical
-                     self.ax.vlines(x=Qo, ymin=H_sys_o, ymax=H_pump_o, colors="green", linestyles="-", linewidth=2.5, label="Regulación (Válvula)", zorder=9)
+                     self.ax.vlines(x=Qo, ymin=H_sys_o, ymax=H_pump_o, colors="green", linestyles="-", linewidth=2.5, label=r"Regulación (Válvula)", zorder=9)
                      self.ax.plot([Qo], [H_pump_o], "o", color="green", markersize=6, zorder=10)
                      self.ax.plot([Qo], [H_sys_o], "o", color="green", markersize=6, zorder=10)
                      
@@ -640,7 +650,7 @@ class App(ctk.CTk):
                          txt_color = "red"
                          edge_color = "red"
                      else:
-                         txt_label = f"ΔH={delta_h:.2f}m"
+                         txt_label = rf"$\Delta H={delta_h:.2f}$ m"
                          txt_color = "green"
                          edge_color = "green"
                      
@@ -884,9 +894,18 @@ class App(ctk.CTk):
             path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG", "*.png")])
             if path: 
                 self.fig.savefig(path, dpi=150)
-                messagebox.showinfo("Guardado", f"Imagen guardada en {path}")
+                messagebox.showinfo("Guardado", f"Gráfica guardada en {path}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
+    
+    def _volver_menu(self):
+        """Cierra esta ventana y abre el menú principal"""
+        import subprocess
+        import sys
+        import os
+        self.destroy()
+        script_path = os.path.join(os.path.dirname(__file__), "menu_principal.py")
+        subprocess.Popen([sys.executable, script_path])
 
 if __name__ == "__main__":
     App().mainloop()

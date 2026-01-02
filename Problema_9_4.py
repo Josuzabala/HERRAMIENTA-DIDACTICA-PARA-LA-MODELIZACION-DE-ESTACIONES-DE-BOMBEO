@@ -72,9 +72,10 @@ def npsh_disp(Patm_bar: float, Pv_bar: float, Z_a: float, Z_D: float, Q_Ls: floa
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("IBS 9.4 – NPSH: Cálculo de Z_D y verificación de cavitación")
+        self.title("Problema nº3: Cavitación (NPSH)")
         try:
             self.geometry("1380x900")
+            self.after(0, lambda: self.state('zoomed'))
         except:
             pass
         
@@ -100,6 +101,13 @@ class App(ctk.CTk):
         
         # Mostrar diálogo introductorio
         self.after(500, self._show_intro_dialog)
+        
+        # Botón volver al menú
+        self.back_btn = ctk.CTkButton(self, text="← Volver al Menú", 
+                                       command=self._volver_menu,
+                                       width=140, height=32,
+                                       fg_color="#666666", hover_color="#444444")
+        self.back_btn.place(x=10, y=10)
         
     def _show_intro_dialog(self):
         """Muestra diálogo explicativo de las dos fases"""
@@ -161,9 +169,9 @@ class App(ctk.CTk):
         self.grid_columnconfigure(2, weight=0, minsize=300)
         self.grid_rowconfigure(0, weight=1)
         
-        # Sidebar
+        # Sidebar (con padding superior para no solapar con botón volver)
         self.sidebar = ctk.CTkScrollableFrame(self, width=430)
-        self.sidebar.grid(row=0, column=0, sticky="nsw", padx=8, pady=8)
+        self.sidebar.grid(row=0, column=0, sticky="nsw", padx=8, pady=(50,8))
         
         # Centro
         center = ctk.CTkFrame(self)
@@ -474,16 +482,16 @@ class App(ctk.CTk):
         else:
             self.ax.set_facecolor("white")
         
-        self.ax.set_title("FASE 2: Verificación Operacional (Z_D={:.3f}m FIJO)".format(Z_D_fijo), fontsize=14, weight="bold")
-        self.ax.set_xlabel("Q (L/s)", fontsize=12)
-        self.ax.set_ylabel("NPSH (mca)", fontsize=12)
+        self.ax.set_title(rf"FASE 2: Verificación Operacional ($Z_D={Z_D_fijo:.3f}$ m FIJO)", fontsize=14, weight="bold")
+        self.ax.set_xlabel(r"$Q$ (L/s)", fontsize=12)
+        self.ax.set_ylabel(r"$NPSH$ (m.c.a.)", fontsize=12)
         self.ax.set_xlim(10, 30)  # Rango fijo de Q
         self.ax.set_ylim(0, 10)   # Rango fijo de NPSH
         self.ax.grid(True, alpha=0.3)
         
         # Curvas principales
-        self.ax.plot(Qplot, H_req_curve, linewidth=2.5, label="NPSH requerido (catálogo)", color="#1976D2")
-        self.ax.plot(Qplot, H_disp_curve, linewidth=2.5, linestyle="--", label=f"NPSH disponible (condiciones actuales)", color="#388E3C")
+        self.ax.plot(Qplot, H_req_curve, linewidth=2.5, label=r"$NPSH_{req}$ (catálogo)", color="#1976D2")
+        self.ax.plot(Qplot, H_disp_curve, linewidth=2.5, linestyle="--", label=r"$NPSH_{disp}$ (condiciones actuales)", color="#388E3C")
         
         # Zona de riesgo (donde NPSH_disp < NPSH_req + NPSH_seg)
         H_req_plus_seg = H_req_curve + NPSH_seg
@@ -493,7 +501,7 @@ class App(ctk.CTk):
                             where=(H_disp_curve >= H_req_plus_seg), alpha=0.15, color="green", label="Zona segura")
         
         # Línea de NPSH_req + NPSH_seg
-        self.ax.plot(Qplot, H_req_plus_seg, color="orange", linestyle=":", linewidth=2, label=f"NPSH_req + NPSH_seg ({NPSH_seg:.2f}m)", alpha=0.8)
+        self.ax.plot(Qplot, H_req_plus_seg, color="orange", linestyle=":", linewidth=2, label=rf"$NPSH_{{req}} + NPSH_{{seg}}$ ({NPSH_seg:.2f} m)", alpha=0.8)
         
         # Línea vertical en Q seleccionado mostrando NPSH_seg_real
         if cavita:
@@ -519,14 +527,14 @@ class App(ctk.CTk):
         mid_y = (H_req + H_disp_sel) / 2
         offset_x = 1.5 if Q_sel < 20 else -1.5
         ha = "left" if Q_sel < 20 else "right"
-        self.ax.text(Q_sel + offset_x, mid_y, f"ΔH={NPSH_seg_real:.3f}m",
+        self.ax.text(Q_sel + offset_x, mid_y, rf"$\Delta H={NPSH_seg_real:.3f}$ m",
                     fontsize=11, weight="bold", color=color_text, ha=ha, va="center",
                     bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=color_text, linewidth=2))
         
         # Texto adicional si no cumple
         if cavita:
             deficit = NPSH_seg - NPSH_seg_real
-            self.ax.text(Q_sel + offset_x, H_req + NPSH_seg, f"Falta {deficit:.3f}m",
+            self.ax.text(Q_sel + offset_x, H_req + NPSH_seg, rf"Falta {deficit:.3f} m",
                         fontsize=9, color="orange", ha=ha, va="bottom",
                         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="orange", linewidth=1.5))
         
@@ -563,6 +571,15 @@ class App(ctk.CTk):
             margen = NPSH_seg_real - NPSH_seg
             self.lbl_margen.configure(text=f"✓ Margen: +{margen:.3f} m",
                                      text_color="green")
+    
+    def _volver_menu(self):
+        """Cierra esta ventana y abre el menú principal"""
+        import subprocess
+        import sys
+        import os
+        self.destroy()
+        script_path = os.path.join(os.path.dirname(__file__), "menu_principal.py")
+        subprocess.Popen([sys.executable, script_path])
 
 if __name__ == "__main__":
     app = App()
