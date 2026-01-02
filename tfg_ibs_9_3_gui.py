@@ -1,683 +1,478 @@
 # -*- coding: utf-8 -*-
 """
-TFG – Problema 9.1 (GUI) con customtkinter
-Extensión: válvula de asiento en aspiración + variación de rpm del rodete
+IBS 9.4 – Dos gráficos con didáctica y alerta de cavitación
+Diseño original (colores/avisos) + funcionamiento definitivo.
 
-Novedades:
-- Slider "n [rpm]" (1200–1800). Referencia en 1490 rpm.
-- Slider "% apertura válvula" (0–100). A 100 % → MISMO comportamiento que versión original.
-- Válvula modelada por capacidad relativa: Φ(α) = Kv(α)/Kv_max (típica Fisher, globo/asiento).
-- Pérdida válvula: hf = 10.197·s·(Q_m3/h / Kv)^2.
-- Si la válvula está cerrada (0 %), se muestra cartel rojo translúcido "CAUDAL NULO!"
-  y no se reporta punto de funcionamiento.
-
-Nota de fuente (para la memoria):
-Emerson | Fisher, Catalog 12 (valores típicos de capacidad relativa vs travel en válvulas globo).
+Reglas:
+- Z_D calculado = z + ΔZ_req y se actualiza con cualquier deslizador.
+- Z_D fijo solo cambia cuando se mueve z: Z_D_fijo += (z_new − z_old) + (ΔZ_new − ΔZ_old).
 """
 
 import numpy as np
-import customtkinter as ctk
-from tkinter import messagebox, ttk, filedialog
+
+# GUI: customtkinter si está, si no tkinter
+try:
+    import customtkinter as ctk
+    from tkinter import StringVar, DoubleVar
+    TK_MODE = "ctk"
+except Exception:
+    import tkinter as ctk  # type: ignore
+    from tkinter import StringVar, DoubleVar  # type: ignore
+    TK_MODE = "tk"
+
+import tkinter as tk
+from tkinter import ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
-ctk.set_appearance_mode("light")
-ctk.set_default_color_theme("blue")
+gamma = 9800.0  # N/m^3
+EPS_OK = 1e-2   # tolerancia para no pintar cavitación si está justo en el límite
 
-# ----------- Utilidades hidráulicas ----------- #
-def hazen_williams_k_per_length(D_m, C):
-    """Devuelve k_L tal que hf = k_L * L * Q^1.852 (Q en m³/s, L en m, hf en m)."""
-    return 10.67 / (C**1.852 * D_m**4.87)
+# Curva NPSHreq(Q) leída de la gráfica (anexo)
+ANCHOR_Q = np.array([12, 16, 20, 25, 28, 30], dtype=float)        # L/s
+ANCHOR_H = np.array([1.0, 1.8, 3.2, 5.2, 6.5, 8.0], dtype=float)  # m
 
-def choose_CHW_from_eps_over_D(eps_cm, D_m):
-    """Asigna C_HW según ε/D (tabla del enunciado)."""
-    eps_m = eps_cm / 100.0
-    r = eps_m / D_m
-    if r <= 1.5e-5:  return 150.0
-    if r <= 2.0e-4:  return 140.0
-    if r <= 1.0e-3:  return 130.0
-    if r <= 4.0e-3:  return 120.0
-    if r <= 1.5e-2:  return 110.0
-    return 100.0
+def npsh_req(Q_Ls: float | np.ndarray) -> float | np.ndarray:
+    return np.interp(Q_Ls, ANCHOR_Q, ANCHOR_H)
 
-def interp_xy(x_table, y_table, x):
-    if x <= x_table[0]:   return float(y_table[0])
-    if x >= x_table[-1]:  return float(y_table[-1])
-    for i in range(len(x_table)-1):
-        x0, x1 = x_table[i], x_table[i+1]
-        if x0 <= x <= x1:
-            y0, y1 = y_table[i], y_table[i+1]
-            t = (x - x0) / (x1 - x0)
-            return float(y0 + t*(y1 - y0))
-    return float(y_table[-1])
+# --------- Modelos ----------
+# hf = k·Q^2·(1 + 0.01·años), con Q en L/s. Ajustado a hf(28 L/s, 0 años) = 0.2 m
+Q0 = 28.0
+hf0 = 0.2
+K_HF = hf0 / (Q0**2)
 
-def bisect_root(f, a, b, tol=1e-8, itmax=200):
-    fa, fb = f(a), f(b)
-    if fa*fb > 0: return None
-    for _ in range(itmax):
-        m = 0.5*(a+b); fm = f(m)
-        if abs(fm) < tol or (b-a) < tol: return m
-        if fa*fm <= 0: b, fb = m, fm
-        else: a, fa = m, fm
-    return 0.5*(a+b)
+def hf_aspiracion(Q_Ls: float, anios: float) -> float:
+    return K_HF * (max(0.0, Q_Ls)**2) * (1.0 + 0.01*max(0.0, anios))
 
-# ----------- Curva de la bomba base (referencia 1490 rpm) ----------- #
-Qb_ls = np.array([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65], dtype=float)
-Hb_m  = np.array([38,38,38,38,38,37,36,34,32,30,26,20,13,0], dtype=float)
-eta_p = np.array([ 0,26,45,58,67,74,77,78,77,75,68,80,30,0], dtype=float)
+# P_atm(z) en mca → bar
+def patm_bar_from_z(z_m: float) -> float:
+    z = min(max(0.0, z_m), 3000.0)
+    patm_mca = 10.33 - z/900.0
+    return (patm_mca * gamma) / 1e5  # bar
 
-N_REF_RPM = 1490.0  # para que n=1490 reproduzca el caso base
+# Pv(T) por tabla (mmca -> mca -> bar)
+T_TAB = np.array([0,10,20,30,40,50,60,70,80,90,100,120,140], dtype=float)
+PV_MMCA_TAB = np.array([63,125,238,432,752,1258,2032,3178,4829,7151,10330,20250,37046], dtype=float)
 
-def scaled_pump_arrays(n_rpm):
-    """Devuelve arrays escalados (Q_ls, H_m, eta) según n/n_ref."""
-    a = float(n_rpm) / N_REF_RPM
-    Q_scaled = Qb_ls * a
-    H_scaled = Hb_m * (a**2)
-    eta_scaled = eta_p.copy()  # mapeamos la misma curva sobre Q escalado
-    return Q_scaled, H_scaled, eta_scaled
+def pv_mca_from_T(T_c: float) -> float:
+    T = min(max(T_c, float(T_TAB.min())), float(T_TAB.max()))
+    pv_mm = np.interp(T, T_TAB, PV_MMCA_TAB)
+    return pv_mm / 1000.0  # mca
 
-def H_bomba_n(Ql, n_rpm):
-    Qs, Hs, _ = scaled_pump_arrays(n_rpm)
-    return interp_xy(Qs, Hs, Ql)
+def pv_bar_from_T(T_c: float) -> float:
+    return (pv_mca_from_T(T_c) * gamma) / 1e5  # bar
 
-def eta_bomba_n(Ql, n_rpm):
-    Qs, _, etas = scaled_pump_arrays(n_rpm)
-    return interp_xy(Qs, etas, Ql)/100.0
+# --------- Fórmulas NPSH ----------
+def deltaZ_required(Patm_bar: float, Pv_bar: float, hf_asp_m: float,
+                    npsh_req_m: float, npsh_seg_m: float) -> float:
+    """ΔZ = (Patm-Pv)/γ - hf_asp - (NPSHreq + NPSHseg)"""
+    Patm = Patm_bar*1e5
+    Pv   = Pv_bar*1e5
+    head_press = (Patm - Pv)/gamma
+    return head_press - hf_asp_m - (npsh_req_m + npsh_seg_m)
 
-# ----------- Válvula de asiento en aspiración (Kv relativo Fisher) ----------- #
-# Fisher (globo, parabolic plug, "to close"): travel [%] → Φ = Kv/Kv_max (típico)
-VALVE_OPEN_PCT = np.array([0, 10, 20, 40, 60, 80, 100], dtype=float)
-VALVE_PHI_REL  = np.array([0.00, 0.20, 0.30, 0.50, 0.60, 0.80, 1.00], dtype=float)
+def npsh_disp_from_dZ(Patm_bar: float, Pv_bar: float, hf_asp_m: float, dZ_m: float) -> float:
+    """NPSH disponible para un ΔZ dado"""
+    Patm = Patm_bar*1e5
+    Pv   = Pv_bar*1e5
+    return (Patm - Pv)/gamma - dZ_m - hf_asp_m
 
-def phi_from_open(pct_open):
-    """Φ = Kv/Kvmax por apertura [%] con interpolación y límites [0,1]."""
-    pct = max(0.0, min(100.0, float(pct_open)))
-    return float(interp_xy(VALVE_OPEN_PCT, VALVE_PHI_REL, pct))
+INTRO_TEXT = (
+    "¿Qué ves en estos dos gráficos?\n\n"
+    "Gráfico 1 — “Cálculo de Z_D requerido”\n"
+    "Ajusta automáticamente la altura de la bomba (Z_D) para el caudal seleccionado Q. "
+    "Calcula el ΔZ necesario para cumplir NPSH_disp = NPSH_req(Q) + NPSH_seg.\n\n"
+    "Gráfico 2 — “Verificación de cavitación con Z_D fijo”\n"
+    "Aquí Z_D es constante (lo controla el usuario) y solo cambia cuando cambias la altitud z. "
+    "Si en el caudal elegido NPSH_disp < NPSH_req(Q) + NPSH_seg, el fondo se pone rojo y aparece “CAVITACIÓN!”.\n\n"
+)
 
-def hf_valve_from_Kv(Q_lps, s_rel, Kv_max_m3h, pct_open):
-    """
-    Pérdida en la válvula en metros del líquido: hf = 10.197*s*(Q_m3h/Kv)^2
-    - 100 % → hf = 0 EXACTO (compatibilidad con caso base).
-    - 0 %   → hf = 0 en Q=0; enorme en Q>0 para bloquear circulación.
-    """
-    pct_open = round(pct_open)  # enteros 0..100 para evitar "0.4 → 0" fantasma
-    if pct_open >= 100:
-        return 0.0
-    if pct_open <= 0:
-        return 0.0 if Q_lps <= 1e-12 else 1e9
-
-    phi = max(1e-9, phi_from_open(pct_open))
-    Kv = phi * max(1e-9, Kv_max_m3h)
-    Q_m3h = (Q_lps / 1000.0) * 3600.0
-    return 10.197 * s_rel * (Q_m3h / Kv)**2
-
-# ============================ GUI ============================ #
-class App(ctk.CTk):
+class App(ctk.CTk if TK_MODE=="ctk" else ctk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Problema 9.1 – Bombeo entre depósitos (GUI)")
-        self.geometry("1200x900")
-        self.minsize(1100, 800)
-
-        # Estado
-        self.delta_z = 10.0
-        self.Q_plot = np.linspace(0, Qb_ls[-1], 400)
-        self.k_lps = None
-        self.last_Qpf = None; self.last_Hpf = None; self.last_eta = None
-        self._update_job = None  # debounce sliders
-
-        # Fuentes
-        self.font_h1 = ctk.CTkFont(family="Segoe UI", size=20, weight="bold")
-        self.font_h2 = ctk.CTkFont(family="Segoe UI", size=16, weight="bold")
-        self.font_body = ctk.CTkFont(family="Segoe UI", size=14)
-
-        # Pestañas
-        self.tabs = ctk.CTkTabview(self)
-        self.tabs.pack(fill="both", expand=True, padx=12, pady=12)
-        self.tab_datos = self.tabs.add("Interactivo")
-        self.tab_result = self.tabs.add("Resultados")
-        self.tab_notas = self.tabs.add("Notas")
-
-        self._build_interactivo()
-        self._build_resultados()
-        self._build_notas()
-
-        self._draw_static_ccb()
-
-    # -------------------- helpers UI -------------------- #
-    def _flash(self, widget, color=("#FFF4CC", "#3A2F00"), dur_ms=180):
+        self.title("IBS 9.4 – NPSH: cálculo de Z_D y verificación de cavitación")
         try:
-            orig = widget.cget("fg_color")
-            widget.configure(fg_color=color)
-            widget.after(dur_ms, lambda: widget.configure(fg_color=orig))
+            self.geometry("1380x900")
+        except Exception:
+            pass
+        if TK_MODE=="ctk":
+            ctk.set_appearance_mode("light")
+            ctk.set_default_color_theme("blue")
+
+        # Valores de enunciado
+        self.defaults = {
+            "Q_Ls": 28.0,
+            "NPSH_seg": 0.5,
+            "anios": 0.0,      # 0..20
+            "z_m": 2000.0,     # 0..3000
+            "T_C": 20.0,       # 0..140
+            "Z_D_fijo": 2000.675
+        }
+        self.cfg = dict(self.defaults)
+        self._last_z = self.defaults["z_m"]
+
+        # Layout y UI
+        self._build_layout()
+        self._build_controls(self.sidebar)
+        self._build_badge(self.badge_panel)
+        self._apply_defaults_to_controls()
+        self._recompute_and_plot()
+
+        # Overlay
+        self.after(1000, self._show_intro_overlay)
+
+    # ----- Layout raíz -----
+    def _build_layout(self):
+        self.grid_columnconfigure(0, weight=0, minsize=440)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=0, minsize=300)
+        self.grid_rowconfigure(0, weight=1)
+
+        # Sidebar
+        self.sidebar = ctk.CTkScrollableFrame(self, width=430) if TK_MODE=="ctk" else ttk.Frame(self)
+        self.sidebar.grid(row=0, column=0, sticky="nsw", padx=8, pady=8)
+
+        # Centro
+        center = ctk.CTkFrame(self) if TK_MODE=="ctk" else ttk.Frame(self)
+        center.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+        center.grid_rowconfigure(0, weight=0)
+        center.grid_rowconfigure(1, weight=1)
+        center.grid_columnconfigure(0, weight=1)
+
+        # Título dinámico
+        self.title_var = tk.StringVar(value="")
+        lbl = ctk.CTkLabel(center, textvariable=self.title_var) if TK_MODE=="ctk" \
+              else ttk.Label(center, textvariable=self.title_var, font=("Segoe UI", 11, "bold"))
+        lbl.grid(row=0, column=0, sticky="w", padx=6, pady=(0,6))
+
+        # Figura
+        self.fig = Figure(figsize=(9.8, 6.8), dpi=100)
+        self.ax1 = self.fig.add_subplot(211)
+        self.ax2 = self.fig.add_subplot(212)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=center)
+        self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+
+        # Badge
+        self.badge_panel = ctk.CTkFrame(self) if TK_MODE=="ctk" else ttk.Frame(self, relief="groove", padding=10)
+        self.badge_panel.grid(row=0, column=2, sticky="n", padx=(8,8), pady=(8,8))
+
+    # ----- Controles -----
+    def _build_controls(self, parent):
+        self.controls = {}
+        row = 0
+
+        def section(text):
+            nonlocal row
+            w = ctk.CTkLabel(parent, text=text) if TK_MODE=="ctk" else ttk.Label(parent, text=text, font=("Segoe UI",10,"bold"))
+            w.grid(row=row, column=0, sticky="w", padx=6, pady=(10,2))
+            row += 1
+
+        def add_slider(key, label, v0, vmin, vmax, step, unit):
+            nonlocal row
+            frm = ctk.CTkFrame(parent) if TK_MODE=="ctk" else ttk.Frame(parent)
+            frm.grid(row=row, column=0, sticky="ew", padx=6, pady=4)
+            if TK_MODE != "ctk":
+                frm.grid_columnconfigure(0, weight=1)
+                frm.grid_columnconfigure(1, weight=0)
+            lab = ctk.CTkLabel(frm, text=label) if TK_MODE=="ctk" else ttk.Label(frm, text=label)
+            lab.grid(row=0, column=0, sticky="w")
+            var = DoubleVar(value=v0)
+            readout = StringVar(value=f"{v0:.6g} {unit}")
+            if TK_MODE=="ctk":
+                nsteps = max(1, int(round((vmax - vmin) / max(step, 1e-9))))
+                sld = ctk.CTkSlider(frm, from_=vmin, to=vmax,
+                                    number_of_steps=nsteps,
+                                    command=lambda v, k=key, u=unit: self._on_slider(k, float(v), u))
+                sld.set(v0)
+                lbl_val = ctk.CTkLabel(frm, textvariable=readout)
+            else:
+                sld = tk.Scale(frm, from_=vmin, to=vmax, resolution=step, orient="horizontal", showvalue=0,
+                               command=lambda v, k=key, u=unit: self._on_slider(k, float(v), u))
+                sld.set(v0)
+                lbl_val = ttk.Label(frm, textvariable=readout)
+            sld.grid(row=1, column=0, sticky="ew", pady=(2,0))
+            lbl_val.grid(row=1, column=1, sticky="e", padx=(8,0))
+            self.controls[key] = {"var": var, "slider": sld, "readout": readout, "unit": unit}
+            row += 1
+
+        def add_label(key, text_init):
+            nonlocal row
+            lab = ctk.CTkLabel(parent, text=f"    {text_init}") if TK_MODE=="ctk" else ttk.Label(parent, text=f"    {text_init}")
+            lab.grid(row=row, column=0, sticky="w", padx=(24,6), pady=(0,2))
+            self.controls[key] = {"label": lab}
+            row += 1
+
+        section("Parámetros")
+        add_slider("Q_Ls",     "Q seleccionado",     self.cfg["Q_Ls"],     10, 30, 0.1,   "L/s")
+        add_slider("NPSH_seg", "NPSH de seguridad",  self.cfg["NPSH_seg"], 0,  2,  0.05,  "m")
+
+        add_slider("anios",    "Tiempo de uso",      self.cfg["anios"],    0,  20, 0.1,   "años")
+        add_label("hf_label",  "hf (aspiración) = k·Q²·(1+0.01·años) → — m")
+
+        add_slider("z_m",      "Altura de la instalación z", self.cfg["z_m"], 0, 3000, 5, "m")
+        add_label("patm_label","P_atm(z): — mca")
+
+        add_slider("T_C",      "Temperatura del agua", self.cfg["T_C"], 0, 100, 1, "°C")
+        add_label("pv_label",  "P_v(T): — mmca (— mca)")
+
+        section("Z_D fijo (Gráfico 2)")
+        add_slider("Z_D_fijo", "Z_D fijo para verificación",
+                   self.cfg["Z_D_fijo"], 1999, 2003, 0.001, "m")
+
+        btn_row = ctk.CTkFrame(parent) if TK_MODE=="ctk" else ttk.Frame(parent)
+        btn_row.grid(row=row, column=0, sticky="ew", padx=6, pady=(6,8))
+        reset_btn = ctk.CTkButton(btn_row, text="Reset a enunciado",
+                                  command=self._reset_defaults) if TK_MODE=="ctk" \
+                    else ttk.Button(btn_row, text="Reset a enunciado", command=self._reset_defaults)
+        reset_btn.grid(row=0, column=0, sticky="ew")
+
+    # ----- Badge (panel de resultados) -----
+    def _build_badge(self, parent):
+        big = ("Segoe UI", 26, "bold")
+        small = ("Segoe UI", 12, "normal")
+
+        if TK_MODE=="ctk":
+            title = ctk.CTkLabel(parent, text="Resultados clave", font=("Segoe UI", 16, "bold"))
+            self.lbl_zd_calc_title = ctk.CTkLabel(parent, text="Z_D calculado (Gráfico 1):", font=small)
+            self.lbl_zd_calc_val   = ctk.CTkLabel(parent, text="— m", font=big)
+            self.lbl_zd_fijo_title = ctk.CTkLabel(parent, text="Z_D fijo (Gráfico 2):", font=small)
+            self.lbl_zd_fijo_val   = ctk.CTkLabel(parent, text="— m", font=big)
+            self.lbl_dz_val        = ctk.CTkLabel(parent, text="ΔZ calculado: — m", font=small)
+        else:
+            title = ttk.Label(parent, text="Resultados clave", font=("Segoe UI", 16, "bold"))
+            self.lbl_zd_calc_title = ttk.Label(parent, text="Z_D calculado (Gráfico 1):", font=small)
+            self.lbl_zd_calc_val   = tk.Label(parent, text="— m", font=big)
+            self.lbl_zd_fijo_title = ttk.Label(parent, text="Z_D fijo (Gráfico 2):", font=small)
+            self.lbl_zd_fijo_val   = tk.Label(parent, text="— m", font=big)
+            self.lbl_dz_val        = ttk.Label(parent, text="ΔZ calculado: — m", font=small)
+
+        title.grid(row=0, column=0, sticky="w", padx=10, pady=(8,4))
+        self.lbl_zd_calc_title.grid(row=1, column=0, sticky="w", padx=10)
+        self.lbl_zd_calc_val.grid(row=2, column=0, sticky="w", padx=10, pady=(0,8))
+        self.lbl_zd_fijo_title.grid(row=3, column=0, sticky="w", padx=10)
+        self.lbl_zd_fijo_val.grid(row=4, column=0, sticky="w", padx=10, pady=(0,8))
+        self.lbl_dz_val.grid(row=5, column=0, sticky="w", padx=10, pady=(8,8))
+
+    # ----- Overlay -----
+    def _show_intro_overlay(self):
+        self.intro = ctk.CTkToplevel(self) if TK_MODE=="ctk" else tk.Toplevel(self)
+        self.intro.title("Introducción")
+        self.intro.transient(self)
+        try:
+            self.intro.attributes("-topmost", True)
+        except Exception:
+            pass
+        w, h = 720, 420
+        try:
+            sw = self.winfo_screenwidth(); sh = self.winfo_screenheight()
+        except Exception:
+            sw, sh = 1400, 900
+        x = int((sw - w) / 2); y = int((sh - h) / 3)
+        try:
+            self.intro.geometry(f"{w}x{h}+{x}+{y}")
         except Exception:
             pass
 
-    def _set_text(self, tb: ctk.CTkTextbox, content: str):
-        old = tb.get("1.0", "end-1c")
-        if old == content:
-            return
-        tb.configure(state="normal")
-        tb.delete("1.0", "end")
-        tb.insert("end", content)
-        tb.configure(state="disabled")
-        self._flash(tb)
+        container = ctk.CTkFrame(self.intro, corner_radius=10) if TK_MODE=="ctk" else ttk.Frame(self.intro, padding=12, relief="groove")
+        container.pack(fill="both", expand=True, padx=10, pady=10)
 
-    # -------------------- TAB: INTERACTIVO -------------------- #
-    def _build_interactivo(self):
-        root = ctk.CTkFrame(self.tab_datos)
-        root.pack(fill="both", expand=True, padx=8, pady=8)
-        root.grid_columnconfigure(0, weight=0)
-        root.grid_columnconfigure(1, weight=1)
-        root.grid_rowconfigure(0, weight=1)
+        title = "Guía rápida"
+        if TK_MODE=="ctk":
+            lbl_title = ctk.CTkLabel(container, text=title, font=("Segoe UI", 16, "bold"))
+            lbl_body  = ctk.CTkLabel(container, text=INTRO_TEXT, justify="left", wraplength=680)
+            btn_ok    = ctk.CTkButton(container, text="Entendido", command=self._close_intro)
+        else:
+            lbl_title = ttk.Label(container, text=title, font=("Segoe UI", 12, "bold"))
+            lbl_body  = ttk.Label(container, text=INTRO_TEXT, justify="left", wraplength=680)
+            btn_ok    = ttk.Button(container, text="Entendido", command=self._close_intro)
 
-        # Izquierda: controles
-        controls = ctk.CTkScrollableFrame(root, width=380)
-        controls.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
+        lbl_title.pack(anchor="w", padx=6, pady=(6,4))
+        lbl_body.pack(fill="both", expand=True, padx=6, pady=(0,10))
+        btn_ok.pack(anchor="e", padx=6, pady=(0,6))
 
-        # Vars
-        self.s_var   = ctk.StringVar(value="1.2")
-        self.nu_var  = ctk.StringVar(value="1e-6")
-        self.D1_var  = ctk.StringVar(value="200")
-        self.L1_var  = ctk.StringVar(value="200")
-        self.D2_var  = ctk.StringVar(value="150")
-        self.L2_var  = ctk.StringVar(value="500")
-        self.eps_var = ctk.StringVar(value="0.01")  # cm
-        self.PB_var  = ctk.StringVar(value="")
-        # Novedades bomba/válvula
-        self.rpm_var   = ctk.StringVar(value=f"{int(N_REF_RPM)}")  # 1490
-        self.open_var  = ctk.StringVar(value="100")                # %
-        self.kvmax_var = ctk.StringVar(value="1600")               # Kv_max m3/h (ajustable)
+    def _close_intro(self):
+        try:
+            self.intro.destroy()
+        except Exception:
+            pass
 
-        ctk.CTkLabel(controls, text="Parámetros", font=self.font_h1).pack(anchor="w", padx=6, pady=(6,2))
+    # ---- Helper: ΔZ_req evaluado en una z dada, con el resto del estado actual ----
+    def _dZ_req_at(self, z_val: float) -> float:
+        Q_sel    = self.cfg["Q_Ls"]
+        anios    = self.cfg.get("anios", 0.0)
+        T_c      = self.cfg.get("T_C", 20.0)
+        NPSH_seg = self.cfg["NPSH_seg"]
 
-        # Helper: slider + entry sincronizados
-        def add_entry_slider(parent, label, var, unit, vmin, vmax, step, fmt):
-            row = ctk.CTkFrame(parent); row.pack(fill="x", padx=6, pady=(6,0))
-            ctk.CTkLabel(row, text=label, font=self.font_body).grid(row=0, column=0, sticky="w")
-            ctk.CTkLabel(row, text=unit, font=self.font_body).grid(row=0, column=2, sticky="w", padx=(6,0))
+        hf_m     = hf_aspiracion(Q_sel, anios)
+        Patm_bar = patm_bar_from_z(z_val)
+        Pv_bar   = pv_bar_from_T(T_c)
+        H_req_Q  = float(npsh_req(Q_sel))
+        return deltaZ_required(Patm_bar, Pv_bar, hf_m, H_req_Q, NPSH_seg)
 
-            sframe = ctk.CTkFrame(parent); sframe.pack(fill="x", padx=6, pady=(2,8))
-            sframe.grid_columnconfigure(0, weight=1)
-            slider = ctk.CTkSlider(sframe, from_=vmin, to=vmax,
-                                   number_of_steps=max(1,int((vmax-vmin)/step)))
+    # ----- Interacción -----
+    def _on_slider(self, key, val, unit):
+        # Actualiza lectura y cfg del control movido
+        if key in self.controls:
+            if "var" in self.controls[key]:
+                self.controls[key]["var"].set(val)
+            if "readout" in self.controls[key]:
+                self.controls[key]["readout"].set(f"{val:.6g} {unit}")
+
+        if key == "z_m":
+            # Solo aquí se ajusta Z_D_fijo (regla definitiva)
+            z_new = float(val)
+            z_old = self._last_z
+
+            zd_fijo_old = self.cfg["Z_D_fijo"]
+            zd_fijo_new = zd_fijo_old + (z_new - z_old)  # solo mantiene ΔZ, sin compensar P_atm
+
+
+            # Recentrar rango del slider Z_D_fijo alrededor del nuevo z y aplicar
             try:
-                init = float(str(var.get()).replace(",", "."))
+                sld = self.controls["Z_D_fijo"]["slider"]
+                if TK_MODE == "ctk":
+                    sld.configure(from_=z_new - 1.0, to=z_new + 3.0)
+                else:
+                    sld.config(from_=z_new - 1.0, to=z_new + 3.0)
+                zd_fijo_clamped = max(z_new - 1.0, min(z_new + 3.0, zd_fijo_new))
+                sld.set(zd_fijo_clamped)
+                self.controls["Z_D_fijo"]["var"].set(zd_fijo_clamped)
+                self.controls["Z_D_fijo"]["readout"].set(f"{zd_fijo_clamped:.6g} m")
+                self.cfg["Z_D_fijo"] = float(zd_fijo_clamped)
             except Exception:
-                init = vmin
-            init = min(max(init, vmin), vmax)
-            slider.set(init)
-            slider.grid(row=0, column=0, sticky="ew", padx=(4,6), pady=2)
+                self.cfg["Z_D_fijo"] = float(zd_fijo_new)
 
-            ent = ctk.CTkEntry(sframe, textvariable=var, width=80, justify="right")
-            ent.grid(row=0, column=1, sticky="e")
+            self._last_z = z_new
 
-            def on_slide(val):
-                var.set(fmt.format(val))
-                self._schedule_recalc()
-            slider.configure(command=on_slide)
+        # Guardar y recomputar
+        self.cfg[key] = float(val)
+        self._recompute_and_plot()
 
-            def on_entry_change(*_):
-                txt = str(var.get()).replace(",", ".").strip()
+    def _apply_defaults_to_controls(self):
+        for k, v in self.defaults.items():
+            if k in self.controls:
                 try:
-                    x = float(txt)
-                except ValueError:
-                    return
-                x = min(max(x, vmin), vmax)
-                slider.set(x)
-                self._schedule_recalc()
-            var.trace_add("write", on_entry_change)
+                    self.controls[k]["slider"].set(v)
+                except Exception:
+                    pass
+                if "var" in self.controls[k]:
+                    self.controls[k]["var"].set(v)
+                if "readout" in self.controls[k]:
+                    self.controls[k]["readout"].set(f"{v:.6g} {self.controls[k]['unit']}")
+        self.cfg = dict(self.defaults)
+        self._last_z = self.defaults["z_m"]
 
-            def on_focus_out(_):
-                txt = str(var.get()).replace(",", ".").strip()
-                try:
-                    x = float(txt)
-                except ValueError:
-                    x = slider.get()
-                x = min(max(x, vmin), vmax)
-                var.set(fmt.format(x)); slider.set(x)
-            ent.bind("<FocusOut>", on_focus_out)
-            ent.bind("<Return>", lambda e: on_focus_out(e))
-            return ent, slider
-
-        # Sliders existentes
-        self.ent_s,  self.sl_s  = add_entry_slider(controls, "s (densidad relativa)", self.s_var, "-", 0.8, 1.4, 0.01, "{:.2f}")
-        row_nu = ctk.CTkFrame(controls); row_nu.pack(fill="x", padx=6, pady=(6,8))
-        ctk.CTkLabel(row_nu, text="ν (m²/s)", font=self.font_body).pack(side="left")
-        ctk.CTkEntry(row_nu, textvariable=self.nu_var, width=100, justify="right").pack(side="left", padx=6)
-        ctk.CTkLabel(row_nu, text="m²/s", font=self.font_body).pack(side="left")
-        self.ent_D1, self.sl_D1 = add_entry_slider(controls, "D1", self.D1_var, "mm", 50.0, 400.0, 1.0, "{:.0f}")
-        self.ent_L1, self.sl_L1 = add_entry_slider(controls, "L1", self.L1_var, "m", 10.0, 1000.0, 1.0, "{:.0f}")
-        self.ent_D2, self.sl_D2 = add_entry_slider(controls, "D2", self.D2_var, "mm", 50.0, 400.0, 1.0, "{:.0f}")
-        self.ent_L2, self.sl_L2 = add_entry_slider(controls, "L2", self.L2_var, "m", 10.0, 1500.0, 1.0, "{:.0f}")
-        self.ent_eps,self.sl_eps= add_entry_slider(controls, "ε (cm)", self.eps_var, "cm", 0.001, 0.10, 0.001, "{:.3f}")
-
-        # NUEVOS: n [rpm], apertura válvula, Kv_max
-        ctk.CTkLabel(controls, text="Bomba y válvula", font=self.font_h2).pack(anchor="w", padx=6, pady=(8,2))
-        self.ent_rpm, self.sl_rpm   = add_entry_slider(controls, "n (velocidad de giro)", self.rpm_var, "rpm", 1200.0, 1800.0, 1.0, "{:.0f}")
-        self.ent_open, self.sl_open = add_entry_slider(controls, "Apertura válvula", self.open_var, "%", 0.0, 100.0, 1.0, "{:.0f}")
-
-        kv_row = ctk.CTkFrame(controls); kv_row.pack(fill="x", padx=6, pady=(4,8))
-        ctk.CTkLabel(kv_row, text="Kv_max (m³/h) válvula", font=self.font_body).pack(side="left")
-        ctk.CTkEntry(kv_row, textvariable=self.kvmax_var, width=90, justify="right").pack(side="left", padx=6)
-
-        # Botones
-        btns = ctk.CTkFrame(controls); btns.pack(fill="x", padx=6, pady=(8,12))
-        self.calc_btn = ctk.CTkButton(btns, text="Calcular a) b) c)", command=self.calcular)
-        self.calc_btn.pack(fill="x")
-
-        pres = ctk.CTkFrame(controls); pres.pack(fill="x", padx=6, pady=(4,8))
-        ctk.CTkLabel(pres, text="d) PB (kg/cm²) manométrica en B", font=self.font_body).pack(anchor="w")
-        pb_row = ctk.CTkFrame(pres); pb_row.pack(fill="x", pady=4)
-        ctk.CTkEntry(pb_row, textvariable=self.PB_var, width=120, justify="right").pack(side="left", padx=4)
-        self.d_btn = ctk.CTkButton(pb_row, text="Aplicar d) presurización", command=self.aplicar_presion_B, state="disabled")
-        self.d_btn.pack(side="left", padx=4)
-
-        ctk.CTkButton(controls, text="Limpiar", command=self.limpiar).pack(fill="x", padx=6, pady=(6,10))
-
-        # Tabla Hmi
-        table_frame = ctk.CTkFrame(controls); table_frame.pack(fill="both", expand=False, padx=6, pady=6)
-        ctk.CTkLabel(table_frame, text="Tabla Hmi cada 5 l/s", font=self.font_h2).pack(anchor="w", padx=6, pady=6)
-        columns = ("Q_lps","Hmi_m")
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=8)
-        self.tree.heading("Q_lps", text="Q (l/s)"); self.tree.heading("Hmi_m", text="Hmi (m)")
-        self.tree.column("Q_lps", width=90, anchor="center")
-        self.tree.column("Hmi_m", width=110, anchor="center")
-        self.tree.pack(fill="both", expand=True, padx=6, pady=6)
-        export_row = ctk.CTkFrame(controls); export_row.pack(fill="x", padx=6, pady=6)
-        ctk.CTkButton(export_row, text="Exportar tabla a CSV", command=self.exportar_csv).pack(side="left", padx=4)
-        ctk.CTkButton(export_row, text="Guardar gráfica", command=self.guardar_grafica).pack(side="left", padx=4)
-
-        # Derecha: gráfico y resultados
-        right = ctk.CTkFrame(root)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.grid_rowconfigure(0, weight=4)
-        right.grid_rowconfigure(1, weight=1)
-        right.grid_columnconfigure(0, weight=1)
-
-        # Gráfico
-        plot_frame = ctk.CTkFrame(right)
-        plot_frame.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4,2))
-        self.fig = plt.Figure(figsize=(6.8, 4.8))
-        self.ax = self.fig.add_subplot(111)
-        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("H (m)")
-        self.ax.set_title("Curvas características y punto de funcionamiento"); self.ax.grid(True)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
-
-        # Resultados en dos columnas
-        res = ctk.CTkFrame(right)
-        res.grid(row=1, column=0, sticky="nsew", padx=4, pady=(2,4))
-        res.grid_columnconfigure(0, weight=1)
-        res.grid_columnconfigure(1, weight=1)
-
-        left_col  = ctk.CTkFrame(res); left_col.grid(row=0, column=0, sticky="nsew", padx=(6,3), pady=6)
-        right_col = ctk.CTkFrame(res); right_col.grid(row=0, column=1, sticky="nsew", padx=(3,6), pady=6)
-
-        # Izquierda: a, b, c
-        ctk.CTkLabel(left_col, text="Resultados a, b, c", font=self.font_h1).pack(anchor="w", padx=8, pady=(4,2))
-        self.lbl_a = ctk.CTkLabel(left_col, text="[a] Curva característica de la instalación", font=self.font_h2)
-        self.lbl_a.pack(anchor="w", padx=8, pady=(6,0))
-        self.txt_a = ctk.CTkTextbox(left_col, height=70, font=self.font_body)
-        self.txt_a.pack(fill="x", padx=8, pady=(2,4))
-        self.txt_a.insert("end", "Pendiente de cálculo…\n"); self.txt_a.configure(state="disabled")
-
-        self.lbl_b = ctk.CTkLabel(left_col, text="[b] Punto de funcionamiento", font=self.font_h2)
-        self.lbl_b.pack(anchor="w", padx=8, pady=(4,0))
-        self.txt_b = ctk.CTkTextbox(left_col, height=56, font=self.font_body)
-        self.txt_b.pack(fill="x", padx=8, pady=(2,4))
-        self.txt_b.insert("end", "Pendiente de cálculo…\n"); self.txt_b.configure(state="disabled")
-
-        self.lbl_c = ctk.CTkLabel(left_col, text="[c] Potencia absorbida", font=self.font_h2)
-        self.lbl_c.pack(anchor="w", padx=8, pady=(4,0))
-        self.txt_c = ctk.CTkTextbox(left_col, height=48, font=self.font_body)
-        self.txt_c.pack(fill="x", padx=8, pady=(2,6))
-        self.txt_c.insert("end", "Pendiente de cálculo…\n"); self.txt_c.configure(state="disabled")
-
-        # Derecha: d, e
-        ctk.CTkLabel(right_col, text="Resultados d, e", font=self.font_h1).pack(anchor="w", padx=8, pady=(4,2))
-        self.lbl_d = ctk.CTkLabel(right_col, text="[d] Con depósito B presurizado", font=self.font_h2)
-        self.lbl_d.pack(anchor="w", padx=8, pady=(6,0))
-        self.txt_d = ctk.CTkTextbox(right_col, height=64, font=self.font_body)
-        self.txt_d.pack(fill="x", padx=8, pady=(2,6))
-        self.txt_d.insert("end", "Introduce PB y pulsa el botón.\n"); self.txt_d.configure(state="disabled")
-
-        self.lbl_e = ctk.CTkLabel(right_col, text="[e] PB_límite en el depósito B (umbral sin circulación)", font=self.font_h2)
-        self.lbl_e.pack(anchor="w", padx=8, pady=(4,0))
-        self.txt_e = ctk.CTkTextbox(right_col, height=48, font=self.font_body)
-        self.txt_e.pack(fill="x", padx=8, pady=(2,8))
-        self.txt_e.insert("end", "Disponible tras aplicar d).\n"); self.txt_e.configure(state="disabled")
-
-    # -------------------- TAB: RESULTADOS -------------------- #
-    def _build_resultados(self):
-        box = ctk.CTkFrame(self.tab_result)
-        box.pack(fill="both", expand=True, padx=8, pady=8)
-        self.text_res = ctk.CTkTextbox(box, font=self.font_body)
-        self.text_res.pack(fill="both", expand=True, padx=8, pady=8)
-        self.text_res.insert("end", "Pulsa ‘Calcular’ en la pestaña Interactivo.\n")
-        self.text_res.configure(state="disabled")
-
-    # -------------------- TAB: NOTAS -------------------- #
-    def _build_notas(self):
-        notes = ctk.CTkTextbox(self.tab_notas, font=self.font_body)
-        notes.pack(fill="both", expand=True, padx=8, pady=8)
-        notes.insert(
-            "end",
-            (
-                "Notas y referencias breves:\n"
-                "• Bernoulli entre A y B: Hmi = Δz + hf, con Δz = 10 m.\n"
-                "• Hazen–Williams por tramos en serie: hf = Σ 10.67·L·Q^1.852 /(C^1.852·D^4.87).\n"
-                "• C_HW por tramo según ε/D: 150, 140, 130, 120, 110, 100.\n"
-                "• Curva de la bomba referida a n_ref = 1490 rpm. Afinidad: Q~n, H~n², P~n³.\n"
-                "• Válvula globo/asiento: Kv(α)=Φ(α)·Kv_max; hf = 10.197·s·(Q_m3/h/Kv)^2.\n"
-                "  Φ(α) típica de Fisher (orientativa). A 100% apertura: hf_válvula = 0 para compatibilidad base.\n"
-                "• d) Presurizar B añade ΔH0 = 10·PB/s (mcl) a la CCI.\n"
-                "• e) PB_límite: mínimo PB en B tal que Δz+ΔH0 ≥ H_bomba(0) (a rpm actuales).\n"
-            ),
-        )
-        notes.configure(state="disabled")
-
-    # -------------------- Helpers -------------------- #
-    def _schedule_recalc(self):
-        if self._update_job is not None:
-            try: self.after_cancel(self._update_job)
-            except Exception: pass
-        self._update_job = self.after(150, self._recalc_from_sliders)
-
-    def _recalc_from_sliders(self):
-        self._update_job = None
+    def _reset_defaults(self):
+        self._apply_defaults_to_controls()
         try:
-            self.calcular()
+            z0 = self.cfg["z_m"]
+            sld = self.controls["Z_D_fijo"]["slider"]
+            if TK_MODE == "ctk":
+                sld.configure(from_=z0 - 1.0, to=z0 + 3.0)
+            else:
+                sld.config(from_=z0 - 1.0, to=z0 + 3.0)
         except Exception:
             pass
+        self._recompute_and_plot()
 
-    def _draw_static_ccb(self):
-        self.ax.cla(); self.ax.grid(True)
-        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("H (m)")
-        self.ax.set_title("Curvas características y punto de funcionamiento")
-        self.ax.plot(Qb_ls, Hb_m, "o-", label=f"CC bomba (n={int(N_REF_RPM)} rpm)", linewidth=2)
-        self.ax.legend(); self.canvas.draw_idle()
+    # ----- Cálculo + gráficos -----
+    def _recompute_and_plot(self):
+        # Lecturas
+        Q_sel    = self.cfg["Q_Ls"]
+        anios    = self.cfg.get("anios", 0.0)
+        z_inst   = self.cfg.get("z_m", 2000.0)   # nivel del depósito = altitud elegida
+        T_c      = self.cfg.get("T_C", 20.0)
+        NPSH_seg = self.cfg["NPSH_seg"]
+        ZD_fijo  = self.cfg["Z_D_fijo"]
 
-    def _parse_inputs(self):
-        try:
-            s   = float(self.s_var.get().replace(",", "."))
-            nu  = float(self.nu_var.get().replace(",", "."))  # informativo
-            D1m = float(self.D1_var.get().replace(",", "."))/1000.0
-            L1  = float(self.L1_var.get().replace(",", "."))
-            D2m = float(self.D2_var.get().replace(",", "."))/1000.0
-            L2  = float(self.L2_var.get().replace(",", "."))
-            eps = float(self.eps_var.get().replace(",", "."))  # cm
-            rpm = float(self.rpm_var.get().replace(",", "."))
-            open_pct = float(self.open_var.get().replace(",", "."))
-            kvmax = float(self.kvmax_var.get().replace(",", "."))
-            if D1m <= 0 or D2m <= 0 or L1 <= 0 or L2 <= 0 or s <= 0 or kvmax <= 0:
-                raise ValueError
-            rpm = min(max(rpm, 1200.0), 1800.0)
-            open_pct = round(min(max(open_pct, 0.0), 100.0))  # entero 0..100
-            return s, nu, D1m, L1, D2m, L2, eps, rpm, open_pct, kvmax
-        except Exception:
-            messagebox.showerror("Error", "Entrada no válida. Revisa las casillas.")
-            return None
+        # Derivados y etiquetas info
+        hf_m       = hf_aspiracion(Q_sel, anios)
+        Patm_bar   = patm_bar_from_z(z_inst)
+        Pv_bar     = pv_bar_from_T(T_c)
 
-    def _cci_params(self, D1m, L1, D2m, L2, eps_cm):
-        C1 = choose_CHW_from_eps_over_D(eps_cm, D1m)
-        C2 = choose_CHW_from_eps_over_D(eps_cm, D2m)
-        kL1 = hazen_williams_k_per_length(D1m, C1)
-        kL2 = hazen_williams_k_per_length(D2m, C2)
-        k_total_lps = (kL1*L1 + kL2*L2) / (1000.0**1.852)
-        J1_lps = kL1 / (1000.0**1.852)
-        J2_lps = kL2 / (1000.0**1.852)
-        return C1, C2, J1_lps, J2_lps, k_total_lps
+        if "hf_label" in self.controls:
+            self.controls["hf_label"]["label"].configure(text=f"    hf (aspiración) = k·Q²·(1+0.01·años) → {hf_m:.3f} m")
+        patm_mca = (Patm_bar*1e5)/gamma
+        if "patm_label" in self.controls:
+            self.controls["patm_label"]["label"].configure(text=f"    P_atm(z): {patm_mca:.3f} mca")
+        pv_mca = (Pv_bar*1e5)/gamma
+        if "pv_label" in self.controls:
+            self.controls["pv_label"]["label"].configure(text=f"    P_v(T): {pv_mca*1000:.0f} mmca ({pv_mca:.3f} mca)")
 
-    def H_inst_lps(self, q_lps, k_lps, s_rel, kvmax_m3h, pct_open, dH0=0.0):
-        """CCI total: base + pérdidas tuberías + pérdidas válvula."""
-        base = (self.delta_z + dH0) + k_lps*(q_lps**1.852)
-        hf_val = hf_valve_from_Kv(q_lps, s_rel, kvmax_m3h, pct_open)
-        return base + hf_val
+        # Título dinámico
+        self.title_var.set(f"Altitud de instalación z = {z_inst:.3f} m. Gráfico 1 recalcula Z_D. Gráfico 2 verifica con Z_D fijo.")
 
-    # -------------------- Acciones principales -------------------- #
-    def calcular(self):
-        parsed = self._parse_inputs()
-        if not parsed: return
-        s, nu, D1m, L1, D2m, L2, eps_cm, rpm, open_pct, kvmax = parsed
+        # Curvas requeridas
+        H_req_Q = float(npsh_req(Q_sel))
+        H_req_plus_Q = H_req_Q + NPSH_seg
 
-        C1, C2, J1_lps, J2_lps, k_lps = self._cci_params(D1m, L1, D2m, L2, eps_cm)
-        self.k_lps = k_lps
+        Qplot = np.linspace(10, 30, 350)
+        H_req_curve = npsh_req(Qplot)
+        H_req_plus_curve = H_req_curve + NPSH_seg
 
-        qs = np.arange(0.0, 61.0+1e-9, 5.0)
+        # ----- Gráfico 1: cálculo de Z_D (base en z_inst) -----
+        dZ_calc = deltaZ_required(Patm_bar, Pv_bar, hf_m, H_req_Q, NPSH_seg)
+        ZD_calc = z_inst + dZ_calc
+        H_disp_calc = npsh_disp_from_dZ(Patm_bar, Pv_bar, hf_m, dZ_calc)
 
-        def equilibrio(q):
-            return H_bomba_n(q, rpm) - self.H_inst_lps(q, k_lps, s, kvmax, open_pct)
+        ax1 = self.ax1
+        ax1.cla()
+        ax1.set_title("NPSH_req + NPSH_seg vs NPSH_disp: cálculo de Z_D requerido")
+        ax1.set_xlabel("Q (L/s)"); ax1.set_ylabel("NPSH (m)"); ax1.grid(True)
 
-        Qmax_busca = max(65.0, Qb_ls[-1]*rpm/N_REF_RPM)
-        Qpf = bisect_root(equilibrio, 0.0, Qmax_busca, tol=1e-8)
+        # Diseño original (colores/estilo)
+        ax1.plot(Qplot, H_req_curve, label="NPSH requerido (catálogo)")
+        ax1.plot(Qplot, H_req_plus_curve, linestyle="--", label="NPSH requerido + seguridad")
+        ax1.axhline(H_disp_calc, color="tab:green", linestyle="--", label="NPSH disp (con ΔZ calculado)")
 
-        if Qpf is None:
-            self._plot_curvas(rpm, k_lps, s, kvmax, open_pct, Qpf=None)
-            self._pinta_resultados_sin_interseccion(C1, C2, J1_lps, J2_lps, k_lps, rpm, open_pct, kvmax, s)
-            self.d_btn.configure(state="disabled")
-            # tabla con Hmi solo como referencia
-            for row in self.tree.get_children(): self.tree.delete(row)
-            for q in qs:
-                self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, kvmax, open_pct):6.2f}"))
-            return
+        margin1 = H_disp_calc - H_req_plus_curve
+        ax1.fill_between(Qplot, H_req_plus_curve, H_disp_calc,
+                         where=(margin1 >= 0), alpha=0.18, color="#5dade2", label="Zona segura")
+        ax1.fill_between(Qplot, H_req_plus_curve, H_disp_calc,
+                         where=(margin1 < 0), alpha=0.18, color="#f1948a", label="Riesgo cavitación")
 
-        Hpf = H_bomba_n(Qpf, rpm); etapf = eta_bomba_n(Qpf, rpm)
+        ax1.scatter([Q_sel], [H_req_plus_Q], s=110, marker="^", color="green", edgecolors="black", zorder=6)
+        ax1.legend(loc="best")
 
-        gamma = 9800.0 * s
-        Pabs_kW = gamma*(Qpf/1000.0)*Hpf/max(etapf,1e-9)/1000.0
+        # ----- Gráfico 2: Z_D fijo y verificación de cavitación -----
+        dZ_fijo = ZD_fijo - z_inst
+        H_disp_fijo = npsh_disp_from_dZ(Patm_bar, Pv_bar, hf_m, dZ_fijo)
 
-        Hb0 = H_bomba_n(0.0, rpm)
-        dH0_lim_m = max(Hb0 - self.delta_z, 0.0)
-        PB_lim_kPa = 9800.0 * s * dH0_lim_m / 1000.0
-        PB_lim_kgcm2 = s * dH0_lim_m / 10.0
+        ax2 = self.ax2
+        ax2.cla()
+        ok = (H_disp_fijo + EPS_OK) >= H_req_plus_Q  # tolerancia
+        ax2.set_facecolor("#FFECEC" if not ok else "white")  # Fondo rojo claro si cavita
+        ax2.set_title("NPSH_req + NPSH_seg vs NPSH_disp: verificación de cavitación con Z_D fijo")
+        ax2.set_xlabel("Q (L/s)"); ax2.set_ylabel("NPSH (m)"); ax2.grid(True)
 
-        # Resultados largos
-        self.text_res.configure(state="normal"); self.text_res.delete("1.0","end")
-        self.text_res.insert("end","[a] Curva característica de la instalación:\n")
-        self.text_res.insert("end",f"    C_HW1={C1:.0f}, C_HW2={C2:.0f}  (según ε/D)\n")
-        self.text_res.insert("end",f"    J1={J1_lps:.6e} ·Q^1.852  y  J2={J2_lps:.6e} ·Q^1.852  (Q en l/s, por m)\n")
-        self.text_res.insert("end",f"    Hmi(Q) = {self.delta_z:.3f} + {k_lps:.6f} · Q^1.852 + hf_válvula(Q)\n\n")
-        self.text_res.insert("end","[b] Punto de funcionamiento:\n")
-        self.text_res.insert("end",f"    n = {rpm:.0f} rpm, apertura = {open_pct:.0f} %, Kv_max = {kvmax:.0f} m³/h\n")
-        self.text_res.insert("end",f"    Q = {Qpf:.2f} l/s,  H = {Hpf:.2f} m,  η = {etapf*100:.1f} %\n\n")
-        self.text_res.insert("end","[c] Potencia absorbida:\n")
-        self.text_res.insert("end",f"    P_abs ≈ {Pabs_kW:.2f} kW\n\n")
-        self.text_res.insert("end","[e] PB_límite en depósito B (umbral sin circulación):\n")
-        self.text_res.insert("end",f"    ΔH0_lím = max(Hb(0)−Δz,0) = {dH0_lim_m:.2f} mcl → PB_lím ≈ {PB_lim_kgcm2:.2f} kg/cm² (≈ {PB_lim_kPa:.0f} kPa)\n")
-        self.text_res.configure(state="disabled")
+        ax2.plot(Qplot, H_req_curve, label="NPSH requerido (catálogo)")
+        ax2.plot(Qplot, H_req_plus_curve, linestyle="--", label="NPSH requerido + seguridad")
+        ax2.axhline(H_disp_fijo, color="tab:green", linestyle="--", label=f"NPSH disp (Z_D fijo = {ZD_fijo:.3f} m)")
 
-        # Tabla
-        for row in self.tree.get_children(): self.tree.delete(row)
-        for q in qs:
-            self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, kvmax, open_pct):6.2f}"))
+        margin2 = H_disp_fijo - H_req_plus_curve
+        ax2.fill_between(Qplot, H_req_plus_curve, H_disp_fijo,
+                         where=(margin2 >= 0), alpha=0.18, color="#5dade2", label="Zona segura")
+        ax2.fill_between(Qplot, H_req_plus_curve, H_disp_fijo,
+                         where=(margin2 < 0), alpha=0.18, color="#f1948a", label="Riesgo cavitación")
 
-        # Gráfica
-        self._plot_curvas(rpm, k_lps, s, kvmax, open_pct, Qpf=Qpf, Hpf=Hpf)
+        marker = "^" if ok else "v"
+        mcolor = "green" if ok else "red"
+        ax2.scatter([Q_sel], [H_req_plus_Q], s=120, marker=marker, color=mcolor, edgecolors="black", zorder=6)
 
-        # Panel corto
-        self._set_text(self.txt_a,
-            f"C_HW1={C1:.0f}, C_HW2={C2:.0f} (según ε/D).\n"
-            f"J1={J1_lps:.6e}·Q^1.852 y J2={J2_lps:.6e}·Q^1.852 (Q en l/s, por m).\n"
-            f"Hmi(Q) = {self.delta_z:.2f} + {k_lps:.6f}·Q^1.852 + hf_válvula(Q).\n"
-        )
-        self._set_text(self.txt_b, f"n = {rpm:.0f} rpm, apertura = {open_pct:.0f} %.\nQ = {Qpf:.2f} l/s, H = {Hpf:.2f} m, η = {etapf*100:.1f} %.\n")
-        self._set_text(self.txt_c, f"P_abs ≈ {Pabs_kW:.2f} kW.\n")
-        self._set_text(self.txt_e, f"PB_lím ≈ {PB_lim_kgcm2:.2f} kg/cm²  (≈ {PB_lim_kPa:.0f} kPa). Aplica cuando B está presurizado.\n")
+        if not ok:
+            ax2.text(0.5, 0.5, "CAVITACIÓN!", transform=ax2.transAxes,
+                     fontsize=28, fontweight="bold", color="red", ha="center", va="center", alpha=0.85)
 
-        self.last_Qpf, self.last_Hpf, self.last_eta = Qpf, Hpf, etapf
-        self.d_btn.configure(state="normal")
+        ax2.legend(loc="best")
 
-    def _plot_curvas(self, rpm, k_lps, s, kvmax, open_pct, Qpf=None, Hpf=None):
-        self.ax.cla(); self.ax.grid(True)
-        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("H (m)")
-        self.ax.set_title("Curvas características y punto de funcionamiento")
+        # Render
+        self.canvas.draw_idle()
 
-        Q_plot = self.Q_plot
-        H_inst_base = [self.H_inst_lps(q, k_lps, s, kvmax, 100.0) for q in Q_plot]
-        Qs, Hs, _ = scaled_pump_arrays(rpm)
+        # Badge: actualizar valores clave
+        self.lbl_zd_calc_val.configure(text=f"{ZD_calc:.3f} m")
+        self.lbl_zd_fijo_val.configure(text=f"{ZD_fijo:.3f} m")
+        self.lbl_dz_val.configure(text=f"ΔZ calculado (Gráfico 1): {dZ_calc:.3f} m")
 
-        if open_pct == 0:
-            # Solo referencia base y bomba; aviso de caudal nulo
-            self.ax.plot(Q_plot, H_inst_base, linestyle="--", label="CCI (válvula abierta 100%)", linewidth=1.5)
-            self.ax.plot(Qs, Hs, "o-", label=f"CC bomba (n={int(rpm)} rpm)", linewidth=2)
-            # Cartel rojo translúcido
-            self.ax.text(
-                0.5, 0.5, "CAUDAL NULO!",
-                transform=self.ax.transAxes, ha="center", va="center",
-                color="red",
-                fontsize=22, fontweight="bold",
-                bbox=dict(facecolor="red", alpha=0.15, edgecolor="red", boxstyle="round,pad=0.6")
-            )
-        else:
-            H_inst = [self.H_inst_lps(q, k_lps, s, kvmax, open_pct) for q in Q_plot]
-            self.ax.plot(Q_plot, H_inst_base, linestyle="--", label="CCI sin válvula (apertura 100%)", linewidth=1.5)
-            self.ax.plot(Q_plot, H_inst, label=f"CCI con válvula (apertura {open_pct:.0f}%)", linewidth=2)
-            self.ax.plot(Qs, Hs, "o-", label=f"CC bomba (n={int(rpm)} rpm)", linewidth=2)
-            if Qpf is not None and Hpf is not None:
-                self.ax.plot([Qpf], [Hpf], "s", markersize=8, label="Punto de funcionamiento")
-
-        # Base piezométrica
-        self.ax.axhline(self.delta_z, linestyle=":", linewidth=1)
-        self.ax.text(Q_plot.max()*0.02, self.delta_z+0.5, "Base piezométrica", fontsize=9)
-
-        self.ax.legend(); self.canvas.draw_idle()
-
-    def _pinta_resultados_sin_interseccion(self, C1, C2, J1, J2, k_lps, rpm, open_pct, kvmax, s):
-        self.text_res.configure(state="normal"); self.text_res.delete("1.0","end")
-        self.text_res.insert("end","[a] Curva característica de la instalación:\n")
-        self.text_res.insert("end",f"    C_HW1={C1:.0f}, C_HW2={C2:.0f}\n")
-        self.text_res.insert("end",f"    Hmi(Q) = {self.delta_z:.3f} + {k_lps:.6f}·Q^1.852 + hf_válvula(Q)\n\n")
-        self.text_res.insert("end","[b] Punto de funcionamiento:\n")
-        self.text_res.insert("end",f"    n = {rpm:.0f} rpm, apertura = {open_pct:.0f} %, Kv_max = {kvmax:.0f} m³/h\n")
-        self.text_res.insert("end","    Sin intersección: la válvula en aspiración impide el caudal (Q=0).\n\n")
-        self.text_res.insert("end","[c] Potencia absorbida:\n")
-        self.text_res.insert("end","    No aplicable (sin Q).\n\n")
-        Hb0 = H_bomba_n(0.0, rpm)
-        dH0_lim_m = max(Hb0 - self.delta_z, 0.0)
-        PB_lim_kPa = 9800.0 * s * dH0_lim_m / 1000.0
-        PB_lim_kgcm2 = s * dH0_lim_m / 10.0
-        self.text_res.insert("end","[e] PB_límite en depósito B (umbral sin circulación):\n")
-        self.text_res.insert("end",f"    ΔH0_lím = {dH0_lim_m:.2f} mcl → PB_lím ≈ {PB_lim_kgcm2:.2f} kg/cm² (≈ {PB_lim_kPa:.0f} kPa)\n")
-        self.text_res.configure(state="disabled")
-
-    # ------------- ÚNICO CAMBIO REALIZADO: forzar actualización de txt_d/txt_e -------------
-    def aplicar_presion_B(self):
-        parsed = self._parse_inputs()
-        if not parsed:
-            messagebox.showinfo("Primero calcula", "Calcula a) b) c) antes de aplicar d).")
-            return
-        s, nu, D1m, L1, D2m, L2, eps_cm, rpm, open_pct, kvmax = parsed
-
-        if self.k_lps is None:
-            messagebox.showinfo("Primero calcula", "Calcula a) b) c) antes de aplicar d).")
-            return
-        txt = self.PB_var.get().strip()
-        if txt == "":
-            messagebox.showinfo("Sin PB", "No has introducido PB manométrica.")
-            return
-        try:
-            PB = float(txt.replace(",", "."))
-        except Exception:
-            messagebox.showerror("Error", "PB no es un número válido.")
-            return
-
-        dH0 = 10.0 * PB / s  # mcl
-
-        def H_inst_pres(q): return self.H_inst_lps(q, self.k_lps, s, kvmax, open_pct, dH0=dH0)
-        def equilibrio(q):  return H_bomba_n(q, rpm) - H_inst_pres(q)
-
-        Qpf2 = bisect_root(equilibrio, 0.0, max(65.0, Qb_ls[-1]*rpm/N_REF_RPM), tol=1e-8)
-
-        Hb0 = H_bomba_n(0.0, rpm)
-        dH0_lim_m = max(Hb0 - self.delta_z, 0.0)
-        PB_lim_kPa = 9800.0 * s * dH0_lim_m / 1000.0
-        PB_lim_kgcm2 = s * dH0_lim_m / 10.0
-        estado = "PB ≥ PB_lím ⇒ no hay circulación" if PB >= PB_lim_kgcm2 else "PB < PB_lím ⇒ hay circulación"
-
-        # ---- Actualiza SIEMPRE el panel corto [d] y [e] ----
-        if Qpf2 is None:
-            self._set_text(self.txt_d, f"PB = {PB:.3f} kg/cm² → ΔH0 ≈ {dH0:.2f} mcl.\nNo hay intersección.\n")
-        else:
-            Hpf2 = H_bomba_n(Qpf2, rpm); eta2 = eta_bomba_n(Qpf2, rpm)
-            gamma = 9800.0 * s
-            Pabs2_kW = gamma*(Qpf2/1000.0)*Hpf2/max(eta2,1e-9)/1000.0
-            self._set_text(self.txt_d,
-                f"PB = {PB:.3f} kg/cm² → ΔH0 ≈ {dH0:.2f} mcl.\n"
-                f"Q' = {Qpf2:.2f} l/s, H' = {Hpf2:.2f} m, η' = {eta2*100:.1f} %, P'_abs ≈ {Pabs2_kW:.2f} kW.\n"
-            )
-
-        self._set_text(self.txt_e, f"PB_lím ≈ {PB_lim_kgcm2:.2f} kg/cm² (≈ {PB_lim_kPa:.0f} kPa). {estado}.\n")
-
-        # ---- Gráfica con PB ----
-        self.ax.cla(); self.ax.grid(True)
-        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("H (m)")
-        self.ax.set_title("Efecto de presurizar el depósito B")
-        Q_plot = self.Q_plot
-        base = [self.H_inst_lps(q, self.k_lps, s, kvmax, open_pct) for q in Q_plot]
-        shift= [H_inst_pres(q) for q in Q_plot]
-        Qs, Hs, _ = scaled_pump_arrays(rpm)
-        self.ax.plot(Q_plot, base,  label="CCI instalación", linewidth=2)
-        self.ax.plot(Q_plot, shift, label="CCI con PB", linewidth=2)
-        self.ax.plot(Qs, Hs, "o-", label=f"CC bomba (n={int(rpm)} rpm)", linewidth=2)
-        if self.last_Qpf is not None:
-            self.ax.plot([self.last_Qpf], [self.last_Hpf], "s", markersize=8, label="Punto base")
-        if Qpf2 is not None:
-            self.ax.plot([Qpf2], [H_bomba_n(Qpf2, rpm)], "D", markersize=8, label="Punto con PB")
-        self.ax.legend(); self.canvas.draw_idle()
-    # -------------------- Utilidades UI -------------------- #
-    def limpiar(self):
-        self.text_res.configure(state="normal"); self.text_res.delete("1.0","end")
-        self.text_res.insert("end", "Pulsa ‘Calcular’ en la pestaña Interactivo.\n")
-        self.text_res.configure(state="disabled")
-        for row in self.tree.get_children(): self.tree.delete(row)
-        self._set_text(self.txt_a, "Pendiente de cálculo…\n")
-        self._set_text(self.txt_b, "Pendiente de cálculo…\n")
-        self._set_text(self.txt_c, "Pendiente de cálculo…\n")
-        self._set_text(self.txt_d, "Introduce PB y pulsa el botón.\n")
-        self._set_text(self.txt_e, "Disponible tras aplicar d).\n")
-        self._draw_static_ccb()
-        self.k_lps = None
-        self.last_Qpf = self.last_Hpf = self.last_eta = None
-        self.d_btn.configure(state="disabled")
-
-    def exportar_csv(self):
-        if self.k_lps is None:
-            messagebox.showinfo("Nada que exportar", "Calcula primero.")
-            return
-        path = filedialog.asksaveasfilename(
-            title="Guardar tabla como CSV",
-            defaultextension=".csv",
-            filetypes=[("CSV", "*.csv")],
-            initialfile="tabla_Hmi.csv",
-        )
-        if not path: return
-        try:
-            with open(path, "w", encoding="utf-8", newline="") as f:
-                f.write("Q_lps,Hmi_m\n")
-                for item in self.tree.get_children():
-                    q, h = self.tree.item(item, "values")
-                    f.write(f"{q},{h}\n")
-            messagebox.showinfo("OK", f"CSV guardado en:\n{path}")
-        except Exception as e:
-            messagebox.showerror("Error al guardar", str(e))
-
-    def guardar_grafica(self):
-        path = filedialog.asksaveasfilename(
-            title="Guardar gráfica",
-            defaultextension=".png",
-            filetypes=[("PNG", "*.png"), ("PDF", "*.pdf")],
-            initialfile="curvas_9_1.png",
-        )
-        if not path: return
-        try:
-            self.fig.savefig(path, dpi=200, bbox_inches="tight")
-            messagebox.showinfo("OK", f"Gráfica guardada en:\n{path}")
-        except Exception as e:
-            messagebox.showerror("Error al guardar", str(e))
-
-def main():
-    App().mainloop()
-
-if __name__ == "__main__":
-    main()
+if __name__=="__main__":
+    app = App()
+    app.mainloop()
