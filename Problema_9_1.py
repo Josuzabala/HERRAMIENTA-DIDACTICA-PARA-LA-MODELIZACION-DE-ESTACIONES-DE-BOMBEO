@@ -281,7 +281,7 @@ class App(ctk.CTk):
 
         # Presurización
         pres = ctk.CTkFrame(controls); pres.pack(fill="x", padx=6, pady=(4,8))
-        ctk.CTkLabel(pres, text="d) PB (kg/cm²) manométrica en B", font=self.font_body).pack(anchor="w")
+        ctk.CTkLabel(pres, text="d) P_B (kg/cm²) manométrica en B", font=self.font_body).pack(anchor="w")
         pb_row = ctk.CTkFrame(pres); pb_row.pack(fill="x", pady=4)
         ctk.CTkEntry(pb_row, textvariable=self.PB_var, width=120, justify="right").pack(side="left", padx=4)
         self.d_btn = ctk.CTkButton(pb_row, text="Aplicar d) presurización", command=self.aplicar_presion_B, state="disabled")
@@ -316,7 +316,7 @@ class App(ctk.CTk):
         plot_frame.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4,2))
         self.fig = plt.Figure(figsize=(6.8, 4.8))
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("Hm (mcl)")
+        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("H_m (m.c.a.)")
         self.ax.set_title("Curvas características y punto de funcionamiento"); self.ax.grid(True)
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
@@ -343,7 +343,7 @@ class App(ctk.CTk):
         
         # Inicializar textos
         self._set_text(self.txt_res_abc, "a) Pendiente de cálculo…\n\nb) Pendiente de cálculo…\n\nc) Pendiente de cálculo…\n")
-        self._set_text(self.txt_res_de, "d) Introduce PB y pulsa el botón.\n\ne) Pendiente de cálculo.\n")
+        self._set_text(self.txt_res_de, "d) Introduce P_B y pulsa el botón.\n\ne) Pendiente de cálculo.\n")
 
     # -------------------- TAB: RESULTADOS (DASHBOARD) -------------------- #
     def _build_resultados(self):
@@ -553,7 +553,7 @@ class App(ctk.CTk):
         dH0_lim_m = max(Hb0 - self.delta_z, 0.0)
         PB_lim_kPa = 9800.0 * s * dH0_lim_m / 1000.0
         PB_lim_kgcm2 = s * dH0_lim_m / 10.0
-        self.res_e_dH0.set(f"ΔH0_lím = {dH0_lim_m:.2f} mcl")
+        self.res_e_dH0.set(f"ΔH0_lím = {dH0_lim_m:.2f} m.c.l.")
         self.res_e_PB.set(f"{PB_lim_kgcm2:.2f} kg/cm² ({PB_lim_kPa:.0f} kPa)")
 
         # --- CONSTRUCCIÓN DEL TEXTO PARA EL PANEL INTERACTIVO (UNIFICADO) ---
@@ -561,14 +561,14 @@ class App(ctk.CTk):
         # Parte A (Siempre visible)
         str_a = (
             f"[a] Curva característica de la instalación:\n"
-            f"    C_HW1={C1:.0f}, C_HW2={C2:.0f} (según ε/D).\n"
-            f"    J1={J1_lps:.6e}·Q^1.852 y J2={J2_lps:.6e}·Q^1.852 (Q en l/s, por m).\n"
+            f"    CHW1={C1:.0f}, CHW2={C2:.0f} (según ε/D).\n"
+            f"    J1={J1_lps:.6e}·Q^1.852 y J2={J2_lps:.6e}·Q^1.852 (Q en L/s, por m).\n"
             f"    Hmi(Q) = {self.delta_z:.2f} + {k_lps:.6f}·Q^1.852 + hf_válvula(Q)."
         )
         # Parte E (Siempre visible)
         str_e = (
-            f"[e] PB_límite en el depósito B (umbral sin circulación):\n"
-            f"    PB_lím ≈ {PB_lim_kgcm2:.2f} kg/cm² (≈ {PB_lim_kPa:.0f} kPa).\n"
+            f"[e] P_B,límite en el depósito B (umbral sin circulación):\n"
+            f"    P_B,lím ≈ {PB_lim_kgcm2:.2f} kg/cm² (≈ {PB_lim_kPa:.0f} kPa).\n"
             f"    Aplica cuando B está presurizado."
         )
 
@@ -590,7 +590,7 @@ class App(ctk.CTk):
             str_c = f"[c] Potencia absorbida:\n    P_abs = 0.00 kW."
             
             self._set_text(self.txt_res_abc, f"{str_a}\n\n{str_b}\n\n{str_c}")
-            self._set_text(self.txt_res_de, f"d) Introduce PB y pulsa el botón.\n\n{str_e}")
+            self._set_text(self.txt_res_de, f"d) Introduce P_B y pulsa el botón.\n\n{str_e}")
 
             # Tabla
             for row in self.tree.get_children(): self.tree.delete(row)
@@ -623,7 +623,7 @@ class App(ctk.CTk):
         str_c = f"[c] Potencia absorbida:\n    P_abs ≈ {Pabs_kW:.2f} kW."
 
         self._set_text(self.txt_res_abc, f"{str_a}\n\n{str_b}\n\n{str_c}")
-        self._set_text(self.txt_res_de, f"d) Introduce PB y pulsa el botón.\n\n{str_e}")
+        self._set_text(self.txt_res_de, f"d) Introduce P_B y pulsa el botón.\n\n{str_e}")
 
         # Tabla
         for row in self.tree.get_children(): self.tree.delete(row)
@@ -694,7 +694,7 @@ class App(ctk.CTk):
             return
         txt = self.PB_var.get().strip()
         if txt == "":
-            messagebox.showinfo("Sin PB", "No has introducido PB manométrica.")
+            messagebox.showinfo("Sin P_B", "No has introducido P_B manométrica.")
             return
         try:
             PB = float(txt.replace(",", "."))
@@ -723,14 +723,14 @@ class App(ctk.CTk):
 
         # Actualizamos el cuadro derecho (d y e)
         if Qpf2 is None:
-            str_d = f"[d] Con depósito B presurizado:\n    PB = {PB:.3f} kg/cm² → ΔH0 ≈ {dH0:.2f} mcl.\n    No hay intersección (PB excesiva)."
+            str_d = f"[d] Con depósito B presurizado:\n    P_B = {PB:.3f} kg/cm² → ΔH₀ ≈ {dH0:.2f} mcl.\n    No hay intersección (P_B excesiva)."
         else:
             Hpf2 = H_bomba(Qpf2); eta2 = eta_bomba(Qpf2)
             gamma = 9800.0 * s
             Pabs2_kW = gamma*(Qpf2/1000.0)*Hpf2/max(eta2,1e-9)/1000.0
             str_d = (
                 f"[d] Con depósito B presurizado:\n"
-                f"    PB = {PB:.3f} kg/cm² → ΔH0 ≈ {dH0:.2f} mcl.\n"  # <--- ¡Línea recuperada!
+                f"    P_B = {PB:.3f} kg/cm² → ΔH₀ ≈ {dH0:.2f} mcl.\n"  # <--- ¡Línea recuperada!
                 f"    Q' = {Qpf2:.2f} l/s, H' = {Hpf2:.2f} m\n"
                 f"    P'_abs ≈ {Pabs2_kW:.2f} kW"
             )
@@ -827,12 +827,8 @@ class App(ctk.CTk):
             messagebox.showerror("Error al guardar", str(e))
     
     def _volver_menu(self):
-        """Cierra esta ventana y abre el menú principal"""
-        import subprocess
-        import sys
+        """Cierra esta ventana (el menú ya está abierto de fondo)"""
         self.destroy()
-        script_path = os.path.join(os.path.dirname(__file__), "menu_principal.py")
-        subprocess.Popen([sys.executable, script_path])
 
 def main():
     App().mainloop()

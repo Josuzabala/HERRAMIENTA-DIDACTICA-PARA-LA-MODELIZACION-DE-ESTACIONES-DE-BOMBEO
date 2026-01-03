@@ -9,8 +9,10 @@ FASE 2: Visualización de NPSH_req vs NPSH_disp con alarma de cavitación
 import numpy as np
 import customtkinter as ctk
 import tkinter as tk
+import tkinter.messagebox as messagebox
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline
 
 ctk.set_appearance_mode("light")
@@ -247,10 +249,10 @@ class App(ctk.CTk):
         add_label("hf_label", "hf (aspiración) = k·Q²·(1+0.15·años) → — m")
         
         add_slider("z_m", "Altura de la instalación z", self.cfg["z_m"], 0, 3000, 5, "m")
-        add_label("patm_label", "P_atm(z): — mca")
+        add_label("patm_label", "P_atm(z): — m.c.a.")
         
         add_slider("T_C", "Temperatura del agua", self.cfg["T_C"], 0, 100, 1, "°C")
-        add_label("pv_label", "P_v(T): — mmca (— mca)")
+        add_label("pv_label", "P_v(T): — mm.c.a. (— m.c.a.)")
         
         # Botones de fase
         section("Navegación")
@@ -377,10 +379,10 @@ class App(ctk.CTk):
             self.controls["hf_label"]["label"].configure(text=f"    hf (aspiración) = k·Q²·(1+0.15·años) → {hf_m:.3f} m")
         patm_mca = (Patm_bar*1e5)/gamma
         if "patm_label" in self.controls:
-            self.controls["patm_label"]["label"].configure(text=f"    P_atm(z): {patm_mca:.3f} mca")
+            self.controls["patm_label"]["label"].configure(text=f"    P_atm(z): {patm_mca:.3f} m.c.a.")
         pv_mca = (Pv_bar*1e5)/gamma
         if "pv_label" in self.controls:
-            self.controls["pv_label"]["label"].configure(text=f"    P_v(T): {pv_mca*1000:.0f} mmca ({pv_mca:.3f} mca)")
+            self.controls["pv_label"]["label"].configure(text=f"    P_v(T): {pv_mca*1000:.0f} mm.c.a. ({pv_mca:.3f} m.c.a.)")
         
         # Calcular Z_D
         dZ = deltaZ_required(Patm_bar, Pv_bar, hf_m, H_req, NPSH_seg)
@@ -412,36 +414,50 @@ class App(ctk.CTk):
             self._plot_phase_2(Q, hf_m, Patm_bar, Pv_bar, H_req, NPSH_seg, dZ)
     
     def _plot_phase_1(self, Q, hf_m, Patm_bar, Pv_bar, H_req, NPSH_seg, dZ):
-        """Fase 1: Mostrar fórmula y cálculo de Z_D (DISEÑO)"""
+        """Fase 1: Renderizado simplificado y robusto"""
         self.ax.cla()
         self.ax.axis('off')
         
-        formula_text = (
-            f"FASE 1: DISEÑO - Cálculo de Z_D (cota de la bomba)\n\n"
-            f"Objetivo: Calcular Z_D para que NPSH_disp = NPSH_req + NPSH_seg\n\n"
-            f"Fórmula:\n"
-            f"  ΔZ = (P_atm - P_v)/γ - hf - (NPSH_req + NPSH_seg)\n"
-            f"  Z_D = z + ΔZ\n\n"
-            f"Condiciones de diseño:\n"
-            f"  Q = {Q:.2f} L/s\n"
-            f"  P_atm = {(Patm_bar*1e5/gamma):.3f} mca\n"
-            f"  P_v = {(Pv_bar*1e5/gamma):.3f} mca\n"
-            f"  hf = {hf_m:.3f} m\n"
-            f"  NPSH_req(Q) = {H_req:.3f} m\n"
-            f"  NPSH_seg = {NPSH_seg:.3f} m\n\n"
-            f"Resultado:\n"
-            f"  ΔZ = {dZ:.3f} m\n"
-            f"  Z_D = {self.cfg['z_m']:.3f} + {dZ:.3f} = {self.Z_D_calculated:.3f} m\n\n"
-            f"La bomba se instalará a esta altura."
-        )
+        # 1. Título
+        self.ax.text(0.5, 0.95, r"FASE 1: DISEÑO - Cálculo de $Z_D$", 
+                    ha='center', va='top', fontsize=16, weight='bold', color='#1565C0')
         
-        self.ax.text(0.5, 0.5, formula_text,
-                    transform=self.ax.transAxes,
-                    fontsize=14, family='monospace',
-                    ha='center', va='center',
-                    bbox=dict(boxstyle='round,pad=1', facecolor='#E8F5E9', edgecolor='#4CAF50', linewidth=2))
+        self.ax.text(0.5, 0.88, r"Objetivo: Calcular $Z_D$ para $NPSH_{disp} \geq NPSH_{req} + NPSH_{seg}$",
+                    ha='center', va='top', fontsize=12)
+
+        # 2. Fórmulas
+        self.ax.text(0.5, 0.75, r"$\Delta Z = \frac{P_{atm} - P_v}{\gamma} - h_f - (NPSH_{req} + NPSH_{seg})$",
+                    ha='center', va='center', fontsize=14, 
+                    bbox=dict(boxstyle="round,pad=0.5", fc="#E3F2FD", ec="#2196F3"))
         
+        self.ax.text(0.5, 0.65, r"$Z_D = z + \Delta Z$",
+                    ha='center', va='center', fontsize=14)
+
+        # 3. Datos (Dos columnas)
+        col1_x = 0.25; col2_x = 0.75; row_y = 0.52
+        step_y = 0.06
         
+        self.ax.text(0.5, 0.58, "Condiciones de Diseño:", ha='center', fontsize=12, weight='bold', style='italic')
+        
+        # Columna 1
+        self.ax.text(col1_x, row_y, rf"$Q = {Q:.2f}\ L/s$", ha='center', fontsize=11)
+        self.ax.text(col1_x, row_y-step_y, rf"$P_{{atm}} = {(Patm_bar*1e5/gamma):.3f}\ m.c.a.$", ha='center', fontsize=11)
+        self.ax.text(col1_x, row_y-2*step_y, rf"$P_v = {(Pv_bar*1e5/gamma):.3f}\ m.c.a.$", ha='center', fontsize=11)
+        
+        # Columna 2
+        self.ax.text(col2_x, row_y, rf"$NPSH_{{req}} = {H_req:.3f}\ m$", ha='center', fontsize=11)
+        self.ax.text(col2_x, row_y-step_y, rf"$NPSH_{{seg}} = {NPSH_seg:.3f}\ m$", ha='center', fontsize=11)
+        self.ax.text(col2_x, row_y-2*step_y, rf"$h_f = {hf_m:.3f}\ m$", ha='center', fontsize=11)
+
+        # 4. Resultados
+        res_y = 0.20
+        self.ax.text(0.5, res_y+0.05, rf"$\Delta Z = {dZ:.3f}\ m$", ha='center', fontsize=14)
+        
+        bg_color = "#C8E6C9" if self.phase == 1 else "#EEEEEE"
+        self.ax.text(0.5, res_y-0.08, rf"$Z_D = {self.cfg['z_m']:.3f} + {dZ:.3f} = \mathbf{{{self.Z_D_calculated:.3f}\ m}}$",
+                    ha='center', va='center', fontsize=18, color="#2E7D32",
+                    bbox=dict(boxstyle="round,pad=1.0", fc=bg_color, ec="#4CAF50", lw=2))
+
         self.canvas.draw_idle()
     
     def _plot_phase_2(self, Q_sel, hf_m, Patm_bar, Pv_bar, H_req, NPSH_seg, dZ):
@@ -507,20 +523,20 @@ class App(ctk.CTk):
         if cavita:
             # Rojo: NPSH_disp < NPSH_req → CAVITACIÓN
             self.ax.vlines(Q_sel, H_disp_sel, H_req, colors="red", linewidth=3.5, zorder=10, label=f"NPSH seg @ Q={Q_sel:.1f} (CAVITA)")
-            self.ax.plot([Q_sel], [H_req], "v", markersize=12, color="red", markeredgecolor="white", markeredgewidth=2, zorder=11)
-            self.ax.plot([Q_sel], [H_disp_sel], "v", markersize=12, color="red", markeredgecolor="white", markeredgewidth=2, zorder=11)
+            self.ax.plot([Q_sel], [H_req], "v", markersize=8, color="red", markeredgecolor="white", markeredgewidth=1.5, zorder=11)
+            self.ax.plot([Q_sel], [H_disp_sel], "v", markersize=8, color="red", markeredgecolor="white", markeredgewidth=1.5, zorder=11)
             color_text = "red"
         elif margen_insuficiente:
             # Naranja: NPSH_seg_real < NPSH_seg configurado → ADVERTENCIA
             self.ax.vlines(Q_sel, H_req, H_disp_sel, colors="orange", linewidth=3.5, zorder=10, label=f"NPSH seg @ Q={Q_sel:.1f} (ADVERTENCIA)")
-            self.ax.plot([Q_sel], [H_req], "^", markersize=12, color="orange", markeredgecolor="white", markeredgewidth=2, zorder=11)
-            self.ax.plot([Q_sel], [H_disp_sel], "^", markersize=12, color="orange", markeredgecolor="white", markeredgewidth=2, zorder=11)
+            self.ax.plot([Q_sel], [H_req], "^", markersize=8, color="orange", markeredgecolor="white", markeredgewidth=1.5, zorder=11)
+            self.ax.plot([Q_sel], [H_disp_sel], "^", markersize=8, color="orange", markeredgecolor="white", markeredgewidth=1.5, zorder=11)
             color_text = "orange"
         else:
             # Verde: NPSH_seg_real >= NPSH_seg → OK
             self.ax.vlines(Q_sel, H_req, H_disp_sel, colors="green", linewidth=3.5, zorder=10, label=f"NPSH seg @ Q={Q_sel:.1f} (OK)")
-            self.ax.plot([Q_sel], [H_req], "^", markersize=12, color="green", markeredgecolor="white", markeredgewidth=2, zorder=11)
-            self.ax.plot([Q_sel], [H_disp_sel], "^", markersize=12, color="green", markeredgecolor="white", markeredgewidth=2, zorder=11)
+            self.ax.plot([Q_sel], [H_req], "^", markersize=8, color="green", markeredgecolor="white", markeredgewidth=1.5, zorder=11)
+            self.ax.plot([Q_sel], [H_disp_sel], "^", markersize=8, color="green", markeredgecolor="white", markeredgewidth=1.5, zorder=11)
             color_text = "green"
         
         # Texto NPSH_seg_real
@@ -543,8 +559,8 @@ class App(ctk.CTk):
             self.ax.text(0.5, 0.5, "⚠ PELIGRO DE CAVITACIÓN ⚠",
                         transform=self.ax.transAxes,
                         fontsize=28, weight="bold", color="red",
-                        ha="center", va="center", alpha=0.85,
-                        bbox=dict(boxstyle="round,pad=0.8", facecolor="white", edgecolor="red", linewidth=3))
+                        ha="center", va="center", # alpha=0.85 ya no es necesario en el texto si el fondo es alpha
+                        bbox=dict(boxstyle="round,pad=0.8", facecolor="#FFCDD2", edgecolor="red", linewidth=2, alpha=0.7))
         
         self.ax.legend(loc="upper right", fontsize=9)
         self.canvas.draw_idle()
@@ -573,14 +589,12 @@ class App(ctk.CTk):
                                      text_color="green")
     
     def _volver_menu(self):
-        """Cierra esta ventana y abre el menú principal"""
-        import subprocess
-        import sys
-        import os
+        """Cierra esta ventana (el menú ya está abierto de fondo)"""
         self.destroy()
-        script_path = os.path.join(os.path.dirname(__file__), "menu_principal.py")
-        subprocess.Popen([sys.executable, script_path])
 
-if __name__ == "__main__":
+def main():
     app = App()
     app.mainloop()
+
+if __name__ == "__main__":
+    main()

@@ -899,13 +899,11 @@ class App(ctk.CTk):
             messagebox.showerror("Error", str(e))
     
     def _volver_menu(self):
-        """Cierra esta ventana y abre el menú principal"""
-        import subprocess
-        import sys
-        import os
+        """Cierra esta ventana (el menú ya está abierto de fondo)"""
         self.destroy()
-        script_path = os.path.join(os.path.dirname(__file__), "menu_principal.py")
-        subprocess.Popen([sys.executable, script_path])
 
 if __name__ == "__main__":
+    App().mainloop()
+    
+def main():
     App().mainloop()

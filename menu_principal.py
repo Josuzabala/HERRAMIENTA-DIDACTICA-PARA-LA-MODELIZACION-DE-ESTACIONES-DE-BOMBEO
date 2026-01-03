@@ -192,13 +192,38 @@ class MainMenuApp(ctk.CTk):
 
     def launch(self, script_name):
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        script_path = os.path.join(base_dir, script_name)
-        if not os.path.exists(script_path):
-            print(f"Error: No se encuentra {script_path}")
-            return
         
-        subprocess.Popen([sys.executable, script_path], cwd=base_dir)
+        # Determine target ID based on script name
+        target_id = None
+        if "Problema_9_1" in script_name: target_id = "p1"
+        elif "Problema_9_2" in script_name: target_id = "p2"
+        elif "Problema_9_4" in script_name: target_id = "p3"
+        
+        if getattr(sys, 'frozen', False):
+            # Running as compiled exe: call self with argument
+            subprocess.Popen([sys.executable, f"--run-{target_id}"], cwd=base_dir)
+        else:
+            # Running as script: call python interpreter on the file
+            script_path = os.path.join(base_dir, script_name)
+            if not os.path.exists(script_path):
+                print(f"Error: No se encuentra {script_path}")
+                return
+            subprocess.Popen([sys.executable, script_path], cwd=base_dir)
 
 if __name__ == "__main__":
-    app = MainMenuApp()
-    app.mainloop()
+    # Check for arguments to act as dispatcher
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        if arg == "--run-p1":
+            import Problema_9_1
+            Problema_9_1.main()
+        elif arg == "--run-p2":
+            import Problema_9_2
+            Problema_9_2.main()
+        elif arg == "--run-p3":
+            import Problema_9_4
+            Problema_9_4.main()
+    else:
+        # Default: Launch Menu
+        app = MainMenuApp()
+        app.mainloop()
