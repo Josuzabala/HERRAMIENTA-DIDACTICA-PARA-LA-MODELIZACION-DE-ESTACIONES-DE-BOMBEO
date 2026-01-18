@@ -103,6 +103,7 @@ class App(ctk.CTk):
         self.res_H = ctk.StringVar(value="-")
         self.res_Eta = ctk.StringVar(value="-")
         self.res_Pot = ctk.StringVar(value="-")
+        self.res_hChorro = ctk.StringVar(value="-")  # NUEVO: altura del chorro
         self.res_Coste = ctk.StringVar(value="-")
         self.res_Coste_Hora = ctk.StringVar(value="-")
         self.res_Bomba = ctk.StringVar(value="-")
@@ -174,11 +175,10 @@ class App(ctk.CTk):
 
         # Variables por defecto
         # Geometricas (FIJAS)
-        self.geo_vals = dict(z="3.00", Dp="175", Le="75", eps="0.015", Dc="80", kc="0.8")
+        self.geo_vals = dict(z="3.00", Dp="175", Le="75", eps="0.015", Dc="80", kc="0.8", s="1.0")
         
         # Variables operativas (SLIDERS)
-        self.defaults = dict(s="1.0", h8="8.0", hobj="8.0", precio="0.11")
-        self.s_var      = ctk.StringVar(value=self.defaults["s"])
+        self.defaults = dict(h8="8.0", hobj="8.0", precio="0.11")
         self.h8_var     = ctk.StringVar(value=self.defaults["h8"])
         self.hobj_var   = ctk.StringVar(value=self.defaults["hobj"])
         self.precio_var = ctk.StringVar(value=self.defaults["precio"])
@@ -192,6 +192,7 @@ class App(ctk.CTk):
         # Grid para datos fijos
         for i, (lbl, val, unit) in enumerate([
             ("Cota z (A)", self.geo_vals["z"], "m"),
+            ("Dens. rel. s", self.geo_vals["s"], "-"),
             ("D tubería",  self.geo_vals["Dp"], "mm"),
             ("L equiv.",   self.geo_vals["Le"], "m"),
             ("Rugosidad ε",self.geo_vals["eps"], "cm"),
@@ -243,8 +244,7 @@ class App(ctk.CTk):
             
             return slider
 
-        # Sliders solicitados
-        self.slider_s = add_entry_slider(controls, "Densidad rel. (s)", self.s_var, "-",      0.80, 1.40, 0.01, "{:.2f}")
+        # Sliders solicitados (sin densidad, ahora es fija)
         self.slider_h8 = add_entry_slider(controls, "h mínima (b)",      self.h8_var, "m",     5.00, 10.0, 0.10, "{:.2f}")
         self.slider_hobj = add_entry_slider(controls, "h objetivo (d)",    self.hobj_var,"m",    5.00, 10.0, 0.10, "{:.2f}")
         self.slider_precio = add_entry_slider(controls, "Precio energía",    self.precio_var,"€/kWh", 0.00, 0.50, 0.01, "{:.2f}")
@@ -362,6 +362,7 @@ class App(ctk.CTk):
         create_kpi(grid1, "CAUDAL", self.res_Q, "l/s", 0, color="#9B59B6", bg_color="#E8D5F0", icon="💧")
         create_kpi(grid1, "ALTURA", self.res_H, "m", 1, color="#9B59B6", bg_color="#E8D5F0", icon="📏")
         create_kpi(grid1, "RENDIMIENTO", self.res_Eta, "%", 2, color="#9B59B6", bg_color="#E8D5F0", icon="⚡")
+        create_kpi(grid1, "ALTURA CHORRO", self.res_hChorro, "m", 3, color="#9B59B6", bg_color="#E8D5F0", icon="⛲")
         
         # Tarjeta 2: Energía y Costes (Naranja)
         card2 = ctk.CTkFrame(self.dash, fg_color="transparent")
@@ -692,7 +693,7 @@ class App(ctk.CTk):
     def _parse_and_get_params(self):
         # Lee de Textvars y constantes
         try:
-            s = float(self.s_var.get().replace(",", "."))
+            s = float(self.geo_vals["s"])  # Ahora s es fijo
             # Geo fixed
             z = float(self.geo_vals["z"])
             Dp_m = float(self.geo_vals["Dp"])/1000.0
@@ -741,7 +742,7 @@ class App(ctk.CTk):
     def calcular(self):
         # 1. Leer inputs
         try:
-            s_val = float(self.s_var.get().replace(",", "."))
+            s_val = float(self.geo_vals["s"])  # s es fijo ahora
             h8  = float(self.h8_var.get().replace(",", "."))
             hobj= float(self.hobj_var.get().replace(",", "."))
             pr  = float(self.precio_var.get().replace(",", "."))
@@ -812,7 +813,16 @@ class App(ctk.CTk):
         self.res_H.set(f"{Hpf:.2f}")
         self.res_Eta.set(f"{eta_pf*100:.1f}")
         self.res_Pot.set(f"{Pabs_kW:.2f}")
-        self.res_Coste.set(f"{coste:.4f}")
+        
+        # Altura del chorro (h_chorro = v²/2g = kv2g * Q²)
+        h_real = kv2g * (Qpf**2)
+        self.res_hChorro.set(f"{h_real:.2f}")
+        
+        # Coste por m³ = (Potencia * Precio) / (Caudal en m³/h)
+        # Q en l/s -> Q en m³/h = Q * 3.6
+        Q_m3h = Qpf * 3.6
+        coste_m3 = (Pabs_kW * pr / Q_m3h) if Q_m3h > 0 else 0
+        self.res_Coste.set(f"{coste_m3:.4f}")
         
         # Coste por hora (más interpretable)
         coste_hora = Pabs_kW * pr if Qpf > 0 else 0
@@ -866,7 +876,9 @@ class App(ctk.CTk):
             f"   Q = {Qpf:.2f} l/s\n"
             f"   H = {Hpf:.2f} mca\n"
             f"   η = {eta_pf*100:.1f} %\n"
-            f"   Pot = {Pabs_kW:.2f} kW\n\n"
+            f"   Pot = {Pabs_kW:.2f} kW\n"
+            f"   h_chorro = {h_real:.2f} m\n"
+            f"   Coste = {coste_m3:.4f} €/m³\n\n"
             f"D) REGULACIÓN (h_obj={hobj}m):\n"
             f"   Q_obj = {Q_obj:.2f} l/s\n"
             f"   {aviso_d}"
@@ -877,12 +889,10 @@ class App(ctk.CTk):
         reg_data = (Q_obj, H_syst_base, H_bomb_obj)
         self._plot_with_zoom(Qpf, Hpf, reg_data=reg_data)
         
-        # Chorro
-        h_real = kv2g * (Qpf**2)
+        # Chorro (ya calculado arriba)
         self._draw_jet(h_real, hobj)
 
     def reiniciar_valores(self):
-        self.s_var.set(self.defaults["s"])
         self.h8_var.set(self.defaults["h8"])
         self.hobj_var.set(self.defaults["hobj"])
         self.precio_var.set(self.defaults["precio"])
