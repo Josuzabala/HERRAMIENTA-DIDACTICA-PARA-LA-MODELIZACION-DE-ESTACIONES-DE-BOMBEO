@@ -60,7 +60,7 @@ def bisect_root(f, a, b, tol=1e-8, itmax=200):
 # ----------- Curva de la bomba base (Fija a 1490 rpm) ----------- #
 Qb_ls = np.array([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65], dtype=float)
 Hb_m  = np.array([38,38,38,38,38,37,36,34,32,30,26,20,13,0], dtype=float)
-eta_p = np.array([ 0,26,45,58,67,74,77,78,77,75,68,80,30,0], dtype=float)
+eta_p = np.array([ 0,26,45,58,67,74,77,78,77,75,68,50,30,0], dtype=float)
 
 def H_bomba(Ql):
     return interp_xy(Qb_ls, Hb_m, Ql)
@@ -96,6 +96,19 @@ def hf_valve_from_Kv(Q_lps, s_rel, Kv_max_m3h, pct_open):
 
 # ============================ GUI ============================ #
 class App(ctk.CTk):
+    # Valores por defecto para referencia
+    DEFAULT_VALUES = {
+        "s": 1.2,
+        "nu": 1e-6,
+        "D1": 200,  # mm
+        "L1": 200,  # m
+        "D2": 150,  # mm
+        "L2": 500,  # m
+        "eps": 0.01,  # cm
+        "open": 100,  # %
+        "kvmax": 300  # m³/h
+    }
+    
     def __init__(self):
         super().__init__()
         self.title("Problema nº1: Bombeo entre depósitos")
@@ -109,6 +122,8 @@ class App(ctk.CTk):
         self.delta_z = 10.0
         self.Q_plot = np.linspace(0, Qb_ls[-1], 400)
         self.k_lps = None
+        self.k_lps_default = None  # k para valores por defecto
+        self.dH0_applied = 0.0  # Presión aplicada en depósito B (en mcl)
         self.last_Qpf = None; self.last_Hpf = None; self.last_eta = None
         self._update_job = None
 
@@ -151,6 +166,9 @@ class App(ctk.CTk):
         self._build_interactivo()
         self._build_resultados()
         self._build_notas()
+        
+        # Calcular k para valores por defecto (referencia)
+        self._compute_default_k()
         
         self._draw_static_ccb()
 
@@ -291,14 +309,17 @@ class App(ctk.CTk):
         reset_btn = ctk.CTkButton(controls, text="Restaurar valores iniciales", fg_color="#555555", hover_color="#333333", command=self.reset_valores)
         reset_btn.pack(fill="x", padx=6, pady=(6,10))
 
-        # Tabla Hmi
+        # Tabla Hmi y rendimiento
         table_frame = ctk.CTkFrame(controls); table_frame.pack(fill="both", expand=False, padx=6, pady=6)
-        ctk.CTkLabel(table_frame, text="Tabla Hmi cada 5 l/s", font=self.font_h2).pack(anchor="w", padx=6, pady=6)
-        columns = ("Q_lps","Hmi_m")
+        ctk.CTkLabel(table_frame, text="Tabla cada 5 l/s", font=self.font_h2).pack(anchor="w", padx=6, pady=6)
+        columns = ("Q_lps", "Hmi_m", "eta_pct")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=8)
-        self.tree.heading("Q_lps", text="Q (l/s)"); self.tree.heading("Hmi_m", text="Hmi (m)")
-        self.tree.column("Q_lps", width=90, anchor="center")
-        self.tree.column("Hmi_m", width=110, anchor="center")
+        self.tree.heading("Q_lps", text="Q (l/s)")
+        self.tree.heading("Hmi_m", text="Hmi (m)")
+        self.tree.heading("eta_pct", text="η (%)")
+        self.tree.column("Q_lps", width=70, anchor="center")
+        self.tree.column("Hmi_m", width=80, anchor="center")
+        self.tree.column("eta_pct", width=70, anchor="center")
         self.tree.pack(fill="both", expand=True, padx=6, pady=6)
         export_row = ctk.CTkFrame(controls); export_row.pack(fill="x", padx=6, pady=6)
         ctk.CTkButton(export_row, text="Exportar tabla a CSV", command=self.exportar_csv).pack(side="left", padx=4)
@@ -483,6 +504,16 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _compute_default_k(self):
+        """Calcula k_lps para los valores por defecto (curva de referencia)."""
+        d = self.DEFAULT_VALUES
+        D1m = d["D1"] / 1000.0
+        D2m = d["D2"] / 1000.0
+        L1, L2 = d["L1"], d["L2"]
+        eps_cm = d["eps"]
+        _, _, _, _, k_total_lps = self._cci_params(D1m, L1, D2m, L2, eps_cm)
+        self.k_lps_default = k_total_lps
+    
     def _draw_static_ccb(self):
         self.ax.cla(); self.ax.grid(True)
         self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("Hm (mcl)")
@@ -535,9 +566,12 @@ class App(ctk.CTk):
         self.k_lps = k_lps
 
         qs = np.arange(0.0, 61.0+1e-9, 5.0)
+        
+        # Usar la presión aplicada (puede ser 0 si no se ha aplicado)
+        dH0 = self.dH0_applied
 
         def equilibrio(q):
-            return H_bomba(q) - self.H_inst_lps(q, k_lps, s, kvmax, open_pct)
+            return H_bomba(q) - self.H_inst_lps(q, k_lps, s, kvmax, open_pct, dH0=dH0)
 
         Qmax_busca = 65.0
         Qpf = bisect_root(equilibrio, 0.0, Qmax_busca, tol=1e-8)
@@ -562,7 +596,7 @@ class App(ctk.CTk):
         str_a = (
             f"[a] Curva característica de la instalación:\n"
             f"    CHW1={C1:.0f}, CHW2={C2:.0f} (según ε/D).\n"
-            f"    J1={J1_lps:.6e}·Q^1.852 y J2={J2_lps:.6e}·Q^1.852 (Q en L/s, por m).\n"
+            f"    J1={J1_lps:.6e} y J2={J2_lps:.6e}.\n"
             f"    Hmi(Q) = {self.delta_z:.2f} + {k_lps:.6f}·Q^1.852 + hf_válvula(Q)."
         )
         # Parte E (Siempre visible)
@@ -595,7 +629,8 @@ class App(ctk.CTk):
             # Tabla
             for row in self.tree.get_children(): self.tree.delete(row)
             for q in qs:
-                self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, kvmax, open_pct):6.2f}"))
+                eta_q = eta_bomba(q) * 100  # Rendimiento en %
+                self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, kvmax, open_pct, dH0=dH0):6.2f}", f"{eta_q:.0f}"))
             
             self.d_btn.configure(state="disabled")
             return
@@ -628,7 +663,8 @@ class App(ctk.CTk):
         # Tabla
         for row in self.tree.get_children(): self.tree.delete(row)
         for q in qs:
-            self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, kvmax, open_pct):6.2f}"))
+            eta_q = eta_bomba(q) * 100  # Rendimiento en %
+            self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, kvmax, open_pct, dH0=dH0):6.2f}", f"{eta_q:.0f}"))
 
         # Gráfica
         self._plot_curvas(k_lps, s, kvmax, open_pct, Qpf=Qpf, Hpf=Hpf)
@@ -638,49 +674,134 @@ class App(ctk.CTk):
 
     def _plot_curvas(self, k_lps, s, kvmax, open_pct, Qpf=None, Hpf=None):
         self.ax.cla(); self.ax.grid(True)
-        self.ax.set_xlabel(r"$Q$ (L/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.)")
+        self.ax.set_xlabel(r"$Q$ (L/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.) — $\eta$ (%)")
         self.ax.set_title("Curvas características y punto de funcionamiento")
 
         Q_plot = self.Q_plot
-        H_inst_base = [self.H_inst_lps(q, k_lps, s, kvmax, 100.0) for q in Q_plot]
+        d = self.DEFAULT_VALUES
+        dH0 = self.dH0_applied  # Presión aplicada
+        
+        # Valores por defecto
+        s_def = d["s"]
+        kvmax_def = d["kvmax"]
+        
+        # === DEFINIR TODAS LAS CURVAS ===
+        # Curva por defecto (todo en valores iniciales)
+        H_inst_default = [self.H_inst_lps(q, self.k_lps_default, s_def, kvmax_def, 100.0, dH0=0.0) for q in Q_plot]
+        
+        # Curva con parámetros modificados (sin presión, apertura 100%)
+        H_inst_params = [self.H_inst_lps(q, k_lps, s, kvmax, 100.0, dH0=0.0) for q in Q_plot]
+        
+        # Curva con parámetros + presión (apertura 100%)
+        H_inst_params_pres = [self.H_inst_lps(q, k_lps, s, kvmax, 100.0, dH0=dH0) for q in Q_plot]
+        
+        # Curva ACTIVA (parámetros + presión + apertura) - SIEMPRE NARANJA
+        H_inst_active = [self.H_inst_lps(q, k_lps, s, kvmax, open_pct, dH0=dH0) for q in Q_plot]
+        
+        # Curva de RENDIMIENTO de la bomba
+        eta_plot = [eta_bomba(q) * 100 for q in Q_plot]  # En %
+        
+        # === DETECTAR QUÉ HA CAMBIADO ===
+        params_changed = (self.k_lps_default is not None and 
+                          abs(k_lps - self.k_lps_default) > 1e-12) or \
+                          abs(s - s_def) > 1e-9 or \
+                          abs(kvmax - kvmax_def) > 1e-9
+        presion_changed = dH0 > 1e-9
+        apertura_changed = open_pct < 100
+        any_change = params_changed or presion_changed or apertura_changed
         
         # Curva Bomba Fija
         Qs, Hs = Qb_ls, Hb_m
 
         if open_pct == 0:
-            # 1. Curva Base (discontinua)
-            self.ax.plot(Q_plot, H_inst_base, linestyle="--", color="tab:blue", label=r"CCI (válvula abierta 100%)", linewidth=1.5)
+            # === CASO VÁLVULA CERRADA ===
             
-            # 2. Curva Bomba
+            # 1. Curva de RENDIMIENTO (roja, arriba)
+            self.ax.plot(Q_plot, eta_plot, "^-", color="tab:red", label=r"$\eta$ (%)", 
+                        linewidth=1.5, markersize=4, markevery=20)
+            
+            # 2. Curva por defecto (azul discontinuo) - solo si hay cambios
+            if any_change:
+                self.ax.plot(Q_plot, H_inst_default, linestyle="--", color="tab:blue", 
+                            label=r"CCI (por defecto)", linewidth=1.5, alpha=0.7)
+            
+            # 3. Curvas intermedias (gris discontinuo)
+            if params_changed and presion_changed:
+                self.ax.plot(Q_plot, H_inst_params, linestyle="--", color="gray",
+                            label=r"CCI (sin presión)", linewidth=1.2, alpha=0.6)
+            
+            if (params_changed or presion_changed) and apertura_changed:
+                self.ax.plot(Q_plot, H_inst_params_pres, linestyle="--", color="dimgray",
+                            label=r"CCI (apertura 100%)", linewidth=1.2, alpha=0.6)
+            
+            # 4. Curva Bomba
             self.ax.plot(Qs, Hs, "o-", color="tab:green", label=r"CC bomba (1490 rpm)", linewidth=2)
             
-            # 3. LÍNEA VERTICAL INFINITA (resistencia infinita)
-            y_techo = max(Hs) * 1.5 
-            self.ax.plot([0, 0], [self.delta_z, y_techo], color="tab:orange", linewidth=3, label=r"CCI con válvula (cerrada 0%)")
+            # 5. LÍNEA VERTICAL (válvula cerrada) - NARANJA (curva activa)
+            y_techo = max(max(Hs), max(eta_plot)) * 1.1
+            self.ax.plot([0, 0], [self.delta_z + dH0, y_techo], color="tab:orange", linewidth=3, 
+                        label=r"CCI activa (válvula cerrada)")
+            
+            # Punto de funcionamiento en rendimiento (Q=0)
+            eta_pf = eta_bomba(0) * 100
+            self.ax.plot([0], [eta_pf], "^", markersize=10, color="darkred", zorder=5)
             
             # Cartel rojo translúcido
             self.ax.text(
                 0.5, 0.5, "CAUDAL NULO!",
                 transform=self.ax.transAxes, ha="center", va="center",
-                color="red",
-                fontsize=22, fontweight="bold",
+                color="red", fontsize=22, fontweight="bold",
                 bbox=dict(facecolor="red", alpha=0.15, edgecolor="red", boxstyle="round,pad=0.6")
             )
-            self.ax.set_ylim(bottom=0, top=max(Hs)*1.2)
+            self.ax.set_ylim(bottom=0, top=y_techo)
 
         else:
-            H_inst = [self.H_inst_lps(q, k_lps, s, kvmax, open_pct) for q in Q_plot]
-            self.ax.plot(Q_plot, H_inst_base, linestyle="--", label=r"CCI sin válvula (apertura 100%)", linewidth=1.5)
-            self.ax.plot(Q_plot, H_inst, label=rf"CCI con válvula (apertura {open_pct:.0f}%)", linewidth=2)
+            # === CASO NORMAL (apertura > 0) ===
+            
+            # 1. Curva de RENDIMIENTO (roja, arriba)
+            self.ax.plot(Q_plot, eta_plot, "^-", color="tab:red", label=r"$\eta$ (%)", 
+                        linewidth=1.5, markersize=4, markevery=20)
+            
+            # 2. Curva por defecto (azul discontinuo) - solo si hay cambios
+            if any_change:
+                self.ax.plot(Q_plot, H_inst_default, linestyle="--", color="tab:blue", 
+                            label=r"CCI (por defecto)", linewidth=1.5, alpha=0.7)
+            
+            # 3. Curvas intermedias (gris discontinuo) - mostrar progresión
+            if params_changed and presion_changed:
+                self.ax.plot(Q_plot, H_inst_params, linestyle="--", color="gray",
+                            label=r"CCI (sin presión)", linewidth=1.2, alpha=0.6)
+            
+            if (params_changed or presion_changed) and apertura_changed:
+                self.ax.plot(Q_plot, H_inst_params_pres, linestyle="--", color="dimgray",
+                            label=r"CCI (apertura 100%)", linewidth=1.2, alpha=0.6)
+            
+            # 4. CURVA ACTIVA - SIEMPRE NARANJA CONTINUO
+            label_activa = r"CCI activa" if not apertura_changed else rf"CCI activa ({open_pct:.0f}%)"
+            self.ax.plot(Q_plot, H_inst_active, linestyle="-", color="tab:orange",
+                        label=label_activa, linewidth=2.5)
+            
+            # 5. Curva de la bomba
             self.ax.plot(Qs, Hs, "o-", label=r"CC bomba (1490 rpm)", linewidth=2, color="tab:green")
+            
+            # 6. Puntos de funcionamiento
             if Qpf is not None and Hpf is not None:
-                self.ax.plot([Qpf], [Hpf], "s", markersize=8, label=r"Punto de funcionamiento", color="tab:red")
+                # Punto en la curva H
+                self.ax.plot([Qpf], [Hpf], "^", markersize=10, 
+                            label=r"Punto funcionamiento", color="darkred", zorder=5)
+                
+                # Punto en la curva de rendimiento
+                eta_pf = eta_bomba(Qpf) * 100
+                self.ax.plot([Qpf], [eta_pf], "^", markersize=10, 
+                            color="darkred", zorder=5)
 
-        # Cota piezométrica
-        self.ax.axhline(self.delta_z, linestyle=":", linewidth=1, color="gray")
-        self.ax.text(Q_plot.max()*0.02, self.delta_z+0.5, "Cota piezométrica", fontsize=9, color="gray")
+        # Cota piezométrica (incluyendo presión)
+        cota_total = self.delta_z + dH0
+        self.ax.axhline(cota_total, linestyle=":", linewidth=1, color="gray")
+        label_cota = "Cota piezométrica" if dH0 < 1e-9 else f"Cota + presión ({cota_total:.1f} m)"
+        self.ax.text(Q_plot.max()*0.02, cota_total+0.5, label_cota, fontsize=9, color="gray")
 
-        self.ax.legend(); self.canvas.draw_idle()
+        self.ax.legend(loc='upper right', fontsize=8); self.canvas.draw_idle()
 
     def aplicar_presion_B(self):
         parsed = self._parse_inputs()
@@ -689,71 +810,50 @@ class App(ctk.CTk):
             return
         s, nu, D1m, L1, D2m, L2, eps_cm, open_pct, kvmax = parsed
 
-        if self.k_lps is None:
-            messagebox.showinfo("Primero calcula", "Calcula a) b) c) antes de aplicar d).")
-            return
         txt = self.PB_var.get().strip()
         if txt == "":
-            messagebox.showinfo("Sin P_B", "No has introducido P_B manométrica.")
+            # Si el campo está vacío, quitar la presión
+            self.dH0_applied = 0.0
+            self.calcular()
             return
+            
         try:
             PB = float(txt.replace(",", "."))
         except Exception:
             messagebox.showerror("Error", "PB no es un número válido.")
             return
 
-        dH0 = 10.0 * PB / s  # mcl
-
-        def H_inst_pres(q): return self.H_inst_lps(q, self.k_lps, s, kvmax, open_pct, dH0=dH0)
-        def equilibrio(q):  return H_bomba(q) - H_inst_pres(q)
-
-        Qpf2 = bisect_root(equilibrio, 0.0, 65.0, tol=1e-8)
+        # Guardar la presión equivalente en mcl
+        self.dH0_applied = 10.0 * PB / s
         
-        # Recuperamos PB_lim
+        # Recalcular todo con la nueva presión
+        self.calcular()
+        
+        # Actualizar el texto del panel d)
         Hb0 = H_bomba(0.0)
         dH0_lim_m = max(Hb0 - self.delta_z, 0.0)
         PB_lim_kPa = 9800.0 * s * dH0_lim_m / 1000.0
         PB_lim_kgcm2 = s * dH0_lim_m / 10.0
         
-        # Texto para parte E
         str_e = (
             f"[e] PB_límite en el depósito B (umbral sin circulación):\n"
             f"    PB_lím ≈ {PB_lim_kgcm2:.2f} kg/cm² (≈ {PB_lim_kPa:.0f} kPa).\n"
         )
-
-        # Actualizamos el cuadro derecho (d y e)
-        if Qpf2 is None:
-            str_d = f"[d] Con depósito B presurizado:\n    P_B = {PB:.3f} kg/cm² → ΔH₀ ≈ {dH0:.2f} mcl.\n    No hay intersección (P_B excesiva)."
-        else:
-            Hpf2 = H_bomba(Qpf2); eta2 = eta_bomba(Qpf2)
-            gamma = 9800.0 * s
-            Pabs2_kW = gamma*(Qpf2/1000.0)*Hpf2/max(eta2,1e-9)/1000.0
+        
+        if self.last_Qpf is not None:
             str_d = (
                 f"[d] Con depósito B presurizado:\n"
-                f"    P_B = {PB:.3f} kg/cm² → ΔH₀ ≈ {dH0:.2f} mcl.\n"  # <--- ¡Línea recuperada!
-                f"    Q' = {Qpf2:.2f} l/s, H' = {Hpf2:.2f} m\n"
-                f"    P'_abs ≈ {Pabs2_kW:.2f} kW"
+                f"    P_B = {PB:.3f} kg/cm² → ΔH₀ ≈ {self.dH0_applied:.2f} mcl.\n"
+                f"    Q' = {self.last_Qpf:.2f} l/s, H' = {self.last_Hpf:.2f} m\n"
+            )
+        else:
+            str_d = (
+                f"[d] Con depósito B presurizado:\n"
+                f"    P_B = {PB:.3f} kg/cm² → ΔH₀ ≈ {self.dH0_applied:.2f} mcl.\n"
+                f"    No hay intersección (P_B excesiva)."
             )
             
         self._set_text(self.txt_res_de, f"{str_d}\n\n{str_e}")
-
-        # ---- Gráfica con PB ----
-        self.ax.cla(); self.ax.grid(True)
-        self.ax.set_xlabel(r"$Q$ (L/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.)")
-        self.ax.set_title("Efecto de presurizar el depósito B")
-        Q_plot = self.Q_plot
-        base = [self.H_inst_lps(q, self.k_lps, s, kvmax, open_pct) for q in Q_plot]
-        shift= [H_inst_pres(q) for q in Q_plot]
-        
-        self.ax.plot(Q_plot, base,  label="CCI instalación", linewidth=2)
-        self.ax.plot(Q_plot, shift, label="CCI con PB", linewidth=2)
-        self.ax.plot(Qb_ls, Hb_m, "o-", label="CC bomba (1490 rpm)", linewidth=2, color="tab:green")
-        
-        if self.last_Qpf is not None:
-            self.ax.plot([self.last_Qpf], [self.last_Hpf], "s", markersize=8, label="Punto base")
-        if Qpf2 is not None:
-            self.ax.plot([Qpf2], [H_bomba(Qpf2)], "D", markersize=8, label="Punto con PB")
-        self.ax.legend(); self.canvas.draw_idle()
     
     # -------------------- Utilidades UI -------------------- #
     def reset_valores(self):
@@ -789,6 +889,7 @@ class App(ctk.CTk):
         
         self._draw_static_ccb()
         self.k_lps = None
+        self.dH0_applied = 0.0  # Reset presión
         self.d_btn.configure(state="disabled")
 
     def exportar_csv(self):
