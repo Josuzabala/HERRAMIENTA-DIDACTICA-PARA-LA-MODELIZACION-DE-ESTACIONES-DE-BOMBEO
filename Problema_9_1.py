@@ -68,31 +68,78 @@ def H_bomba(Ql):
 def eta_bomba(Ql):
     return interp_xy(Qb_ls, eta_p, Ql)/100.0
 
-# ----------- Válvula de asiento en aspiración ----------- #
-# Arrays originales (Parabolic Plug, To Close).
-VALVE_OPEN_PCT = np.array([0, 10, 20, 40, 60, 80, 100], dtype=float)
-VALVE_PHI_REL  = np.array([0.00, 0.20, 0.30, 0.50, 0.60, 0.80, 1.00], dtype=float)
+# ----------- Válvula en tubería de impulsión ----------- #
+# Diámetros comerciales de la válvula (mm): 100, 150, 200, 250, 300
+# Grados de apertura: 0 a 90 grados (pasos de 10°)
+# Kv en (m³/h)/(kg/cm²)^0.5 según gráfico del fabricante (lectura estricta)
 
-def phi_from_open(pct_open):
-    """Φ = Kv/Kvmax por apertura [%] con interpolación y límites [0,1]."""
-    pct = max(0.0, min(100.0, float(pct_open)))
-    return float(interp_xy(VALVE_OPEN_PCT, VALVE_PHI_REL, pct))
+VALVE_DIAMETERS = [100, 150, 200, 250, 300]  # mm
+VALVE_APERTURE_DEG = np.array([0, 10, 20, 30, 40, 50, 60, 70, 80, 90], dtype=float)  # grados
 
-def hf_valve_from_Kv(Q_lps, s_rel, Kv_max_m3h, pct_open):
+# Tablas Kv para cada diámetro (lectura estricta del gráfico)
+# Cuando la curva sale del gráfico (>500), se pone 500
+VALVE_KV_TABLES = {
+    # D=100mm (curva azul, la más baja)
+    100: np.array([0, 2, 7, 18, 38, 65, 102, 150, 210, 280], dtype=float),
+    # D=150mm (curva naranja)
+    150: np.array([0, 3, 12, 32, 62, 105, 160, 235, 320, 420], dtype=float),
+    # D=200mm (curva verde)
+    200: np.array([0, 5, 20, 50, 95, 155, 230, 320, 420, 500], dtype=float),
+    # D=250mm (curva amarilla)
+    250: np.array([0, 8, 32, 75, 140, 230, 340, 470, 500, 500], dtype=float),
+    # D=300mm (curva roja, la más alta - sale del gráfico a ~58°)
+    300: np.array([0, 12, 48, 115, 205, 340, 500, 500, 500, 500], dtype=float),
+}
+
+def get_Kv_from_diameter_and_aperture(D_mm, aperture_deg):
     """
-    Pérdida en la válvula: hf = 10.197*s*(Q_m3h/Kv)^2
-    - 100 % → hf = 0 EXACTO.
+    Obtiene el Kv interpolando según el diámetro y grado de apertura.
+    D_mm: Diámetro de la válvula en mm (debe ser uno de los comerciales: 100, 150, 200, 250, 300)
+    aperture_deg: Grado de apertura (0 a 90 grados)
+    Retorna Kv en (m³/h)/(kg/cm²)^0.5
     """
-    pct_open = round(pct_open)  
-    if pct_open >= 100:
-        return 0.0
-    if pct_open <= 0:
+    # Buscar el diámetro más cercano
+    D_int = int(round(D_mm))
+    if D_int not in VALVE_KV_TABLES:
+        # Buscar el más cercano
+        D_int = min(VALVE_DIAMETERS, key=lambda x: abs(x - D_mm))
+    
+    Kv_table = VALVE_KV_TABLES[D_int]
+    aperture_deg = max(0.0, min(90.0, float(aperture_deg)))
+    
+    return float(interp_xy(VALVE_APERTURE_DEG, Kv_table, aperture_deg))
+
+def hf_valve_new(Q_lps, s_rel, D_valve_mm, aperture_deg):
+    """
+    Pérdida en la válvula según la nueva fórmula:
+    hf = (Q²/Kv²) × (10/s)
+    Donde Q está en m³/h y Kv viene del gráfico.
+    
+    Q_lps: Caudal en l/s
+    s_rel: Densidad relativa
+    D_valve_mm: Diámetro de la válvula en mm
+    aperture_deg: Grado de apertura (0-90°)
+    
+    Retorna hf en m.c.l.
+    """
+    if aperture_deg >= 90:
+        # Válvula completamente abierta, pérdidas mínimas
+        Kv = get_Kv_from_diameter_and_aperture(D_valve_mm, 90)
+    elif aperture_deg <= 0:
+        # Válvula cerrada
         return 0.0 if Q_lps <= 1e-12 else 1e9
-
-    phi = max(1e-9, phi_from_open(pct_open))
-    Kv = phi * max(1e-9, Kv_max_m3h)
+    else:
+        Kv = get_Kv_from_diameter_and_aperture(D_valve_mm, aperture_deg)
+    
+    if Kv < 1e-6:
+        return 0.0 if Q_lps <= 1e-12 else 1e9
+    
+    # Convertir Q de l/s a m³/h
     Q_m3h = (Q_lps / 1000.0) * 3600.0
-    return 10.197 * s_rel * (Q_m3h / Kv)**2
+    
+    # Fórmula: hf = (Q²/Kv²) × (10/s)
+    hf = (Q_m3h**2 / Kv**2) * (10.0 / s_rel)
+    return hf
 
 # ============================ GUI ============================ #
 class App(ctk.CTk):
@@ -102,11 +149,10 @@ class App(ctk.CTk):
         "nu": 1e-6,
         "D1": 200,  # mm
         "L1": 200,  # m
-        "D2": 150,  # mm
+        "D2": 150,  # mm (válvula: 100, 150, 200, 250, 300)
         "L2": 500,  # m
         "eps": 0.01,  # cm
-        "open": 100,  # %
-        "kvmax": 300  # m³/h
+        "open_deg": 90,  # grados (0-90)
     }
     
     def __init__(self):
@@ -214,8 +260,7 @@ class App(ctk.CTk):
         self.PB_var  = ctk.StringVar(value="")
         
         # Válvula
-        self.open_var  = ctk.StringVar(value="100")   # %
-        self.kvmax_var = ctk.StringVar(value="300")   # Kv_max fijo y oculto
+        self.open_var  = ctk.StringVar(value="90")   # grados (0-90)
 
         ctk.CTkLabel(controls, text="Parámetros", font=self.font_h1).pack(anchor="w", padx=6, pady=(6,2))
 
@@ -283,14 +328,15 @@ class App(ctk.CTk):
         self.ent_D1, self.sl_D1 = add_entry_slider(controls, "D1 (comercial)", self.D1_var, "mm", 50.0, 400.0, 25.0, "{:.0f}")
         self.ent_L1, self.sl_L1 = add_entry_slider(controls, "L1", self.L1_var, "m", 10.0, 1000.0, 1.0, "{:.0f}")
         
-        self.ent_D2, self.sl_D2 = add_entry_slider(controls, "D2 (comercial)", self.D2_var, "mm", 50.0, 400.0, 25.0, "{:.0f}")
+        # D2 = Diámetro de la válvula (comerciales: 100, 150, 200, 250, 300 mm)
+        self.ent_D2, self.sl_D2 = add_entry_slider(controls, "D2 (válvula)", self.D2_var, "mm", 100.0, 300.0, 50.0, "{:.0f}")
         self.ent_L2, self.sl_L2 = add_entry_slider(controls, "L2", self.L2_var, "m", 10.0, 1500.0, 1.0, "{:.0f}")
         
         self.ent_eps,self.sl_eps= add_entry_slider(controls, "ε (cm)", self.eps_var, "cm", 0.001, 0.10, 0.001, "{:.3f}")
 
-        # Válvula
+        # Válvula (apertura en grados)
         ctk.CTkLabel(controls, text="Regulación Válvula", font=self.font_h2).pack(anchor="w", padx=6, pady=(8,2))
-        self.ent_open, self.sl_open = add_entry_slider(controls, "Apertura válvula", self.open_var, "%", 0.0, 100.0, 1.0, "{:.0f}")
+        self.ent_open, self.sl_open = add_entry_slider(controls, "Apertura válvula", self.open_var, "°", 0.0, 90.0, 10.0, "{:.0f}")
 
         # Botones Principales
         btns = ctk.CTkFrame(controls); btns.pack(fill="x", padx=6, pady=(8,12))
@@ -528,14 +574,14 @@ class App(ctk.CTk):
             D1m = float(self.D1_var.get().replace(",", "."))/1000.0
             L1  = float(self.L1_var.get().replace(",", "."))
             D2m = float(self.D2_var.get().replace(",", "."))/1000.0
+            D2_mm = float(self.D2_var.get().replace(",", "."))  # mm para válvula
             L2  = float(self.L2_var.get().replace(",", "."))
             eps = float(self.eps_var.get().replace(",", "."))  # cm
-            open_pct = float(self.open_var.get().replace(",", "."))
-            kvmax = float(self.kvmax_var.get().replace(",", "."))
-            if D1m <= 0 or D2m <= 0 or L1 <= 0 or L2 <= 0 or s <= 0 or kvmax <= 0:
+            open_deg = float(self.open_var.get().replace(",", "."))  # grados
+            if D1m <= 0 or D2m <= 0 or L1 <= 0 or L2 <= 0 or s <= 0:
                 raise ValueError
-            open_pct = round(min(max(open_pct, 0.0), 100.0))  # entero 0..100
-            return s, nu, D1m, L1, D2m, L2, eps, open_pct, kvmax
+            open_deg = round(min(max(open_deg, 0.0), 90.0))  # entero 0..90
+            return s, nu, D1m, L1, D2m, D2_mm, L2, eps, open_deg
         except Exception:
             messagebox.showerror("Error", "Entrada no válida. Revisa las casillas.")
             return None
@@ -550,20 +596,24 @@ class App(ctk.CTk):
         J2_lps = kL2 / (1000.0**1.852)
         return C1, C2, J1_lps, J2_lps, k_total_lps
 
-    def H_inst_lps(self, q_lps, k_lps, s_rel, kvmax_m3h, pct_open, dH0=0.0):
-        """CCI total: base + pérdidas tuberías + pérdidas válvula."""
+    def H_inst_lps(self, q_lps, k_lps, s_rel, D2_mm, open_deg, dH0=0.0):
+        """CCI total: base + pérdidas tuberías + pérdidas válvula.
+        D2_mm: Diámetro de la válvula en mm
+        open_deg: Grado de apertura (0-90°)
+        """
         base = (self.delta_z + dH0) + k_lps*(q_lps**1.852)
-        hf_val = hf_valve_from_Kv(q_lps, s_rel, kvmax_m3h, pct_open)
+        hf_val = hf_valve_new(q_lps, s_rel, D2_mm, open_deg)
         return base + hf_val
 
     # -------------------- Acciones principales -------------------- #
     def calcular(self):
         parsed = self._parse_inputs()
         if not parsed: return
-        s, nu, D1m, L1, D2m, L2, eps_cm, open_pct, kvmax = parsed
+        s, nu, D1m, L1, D2m, D2_mm, L2, eps_cm, open_deg = parsed
 
         C1, C2, J1_lps, J2_lps, k_lps = self._cci_params(D1m, L1, D2m, L2, eps_cm)
         self.k_lps = k_lps
+        self.D2_mm = D2_mm  # Guardar para uso posterior
 
         qs = np.arange(0.0, 61.0+1e-9, 5.0)
         
@@ -571,10 +621,13 @@ class App(ctk.CTk):
         dH0 = self.dH0_applied
 
         def equilibrio(q):
-            return H_bomba(q) - self.H_inst_lps(q, k_lps, s, kvmax, open_pct, dH0=dH0)
+            return H_bomba(q) - self.H_inst_lps(q, k_lps, s, D2_mm, open_deg, dH0=dH0)
 
         Qmax_busca = 65.0
         Qpf = bisect_root(equilibrio, 0.0, Qmax_busca, tol=1e-8)
+        
+        # Obtener Kv actual para mostrar
+        Kv_actual = get_Kv_from_diameter_and_aperture(D2_mm, open_deg)
         
         # --- ACTUALIZAR DATOS DE DASHBOARD (Pestaña Resultados) ---
         
@@ -608,11 +661,11 @@ class App(ctk.CTk):
 
         if Qpf is None:
             # CASO SIN INTERSECCIÓN (Caudal Nulo)
-            self._plot_curvas(k_lps, s, kvmax, open_pct, Qpf=None)
+            self._plot_curvas(k_lps, s, D2_mm, open_deg, Qpf=None)
             
             # Dashboard a ceros/alertas
-            self.res_b_apertura.set(f"Apertura: {open_pct:.0f}%")
-            self.res_b_kvmax.set(f"Kv_max (int.): {kvmax:.0f}")
+            self.res_b_apertura.set(f"Apertura: {open_deg:.0f}°")
+            self.res_b_kvmax.set(f"Kv: {Kv_actual:.0f}")
             self.res_b_Q.set("0.00")
             self.res_b_H.set(f"{Hb0:.2f}") 
             self.res_b_Eta.set("0.0")
@@ -620,7 +673,7 @@ class App(ctk.CTk):
             self.res_status.set("Estado: Válvula cerrada o resistencia infinita. No hay circulación.")
             
             # Textos panel interactivo
-            str_b = f"[b] Punto de funcionamiento:\n    Apertura = {open_pct:.0f} %.\n    Q = 0.00 l/s (Cerrado)."
+            str_b = f"[b] Punto de funcionamiento:\n    Apertura = {open_deg:.0f}°.\n    Q = 0.00 l/s (Cerrado)."
             str_c = f"[c] Potencia absorbida:\n    P_abs = 0.00 kW."
             
             self._set_text(self.txt_res_abc, f"{str_a}\n\n{str_b}\n\n{str_c}")
@@ -630,7 +683,7 @@ class App(ctk.CTk):
             for row in self.tree.get_children(): self.tree.delete(row)
             for q in qs:
                 eta_q = eta_bomba(q) * 100  # Rendimiento en %
-                self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, kvmax, open_pct, dH0=dH0):6.2f}", f"{eta_q:.0f}"))
+                self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, D2_mm, open_deg, dH0=dH0):6.2f}", f"{eta_q:.0f}"))
             
             self.d_btn.configure(state="disabled")
             return
@@ -641,8 +694,8 @@ class App(ctk.CTk):
         Pabs_kW = gamma*(Qpf/1000.0)*Hpf/max(etapf,1e-9)/1000.0
 
         # Dashboard con datos
-        self.res_b_apertura.set(f"Apertura: {open_pct:.0f}%")
-        self.res_b_kvmax.set(f"Kv_max: {kvmax:.0f}")
+        self.res_b_apertura.set(f"Apertura: {open_deg:.0f}°")
+        self.res_b_kvmax.set(f"Kv: {Kv_actual:.0f}")
         self.res_b_Q.set(f"{Qpf:.2f}")
         self.res_b_H.set(f"{Hpf:.2f}")
         self.res_b_Eta.set(f"{etapf*100:.1f}")
@@ -652,7 +705,7 @@ class App(ctk.CTk):
         # Textos panel interactivo
         str_b = (
             f"[b] Punto de funcionamiento:\n"
-            f"    Apertura = {open_pct:.0f} %.\n"
+            f"    Apertura = {open_deg:.0f}°.\n"
             f"    Q = {Qpf:.2f} l/s, H = {Hpf:.2f} m, η = {etapf*100:.1f} %."
         )
         str_c = f"[c] Potencia absorbida:\n    P_abs ≈ {Pabs_kW:.2f} kW."
@@ -664,15 +717,15 @@ class App(ctk.CTk):
         for row in self.tree.get_children(): self.tree.delete(row)
         for q in qs:
             eta_q = eta_bomba(q) * 100  # Rendimiento en %
-            self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, kvmax, open_pct, dH0=dH0):6.2f}", f"{eta_q:.0f}"))
+            self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, D2_mm, open_deg, dH0=dH0):6.2f}", f"{eta_q:.0f}"))
 
         # Gráfica
-        self._plot_curvas(k_lps, s, kvmax, open_pct, Qpf=Qpf, Hpf=Hpf)
+        self._plot_curvas(k_lps, s, D2_mm, open_deg, Qpf=Qpf, Hpf=Hpf)
 
         self.last_Qpf, self.last_Hpf, self.last_eta = Qpf, Hpf, etapf
         self.d_btn.configure(state="normal")
 
-    def _plot_curvas(self, k_lps, s, kvmax, open_pct, Qpf=None, Hpf=None):
+    def _plot_curvas(self, k_lps, s, D2_mm, open_deg, Qpf=None, Hpf=None):
         self.ax.cla(); self.ax.grid(True)
         self.ax.set_xlabel(r"$Q$ (L/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.) — $\eta$ (%)")
         self.ax.set_title("Curvas características y punto de funcionamiento")
@@ -683,20 +736,21 @@ class App(ctk.CTk):
         
         # Valores por defecto
         s_def = d["s"]
-        kvmax_def = d["kvmax"]
+        D2_def = d["D2"]  # mm
+        open_deg_def = d["open_deg"]  # grados
         
         # === DEFINIR TODAS LAS CURVAS ===
         # Curva por defecto (todo en valores iniciales)
-        H_inst_default = [self.H_inst_lps(q, self.k_lps_default, s_def, kvmax_def, 100.0, dH0=0.0) for q in Q_plot]
+        H_inst_default = [self.H_inst_lps(q, self.k_lps_default, s_def, D2_def, open_deg_def, dH0=0.0) for q in Q_plot]
         
-        # Curva con parámetros modificados (sin presión, apertura 100%)
-        H_inst_params = [self.H_inst_lps(q, k_lps, s, kvmax, 100.0, dH0=0.0) for q in Q_plot]
+        # Curva con parámetros modificados (sin presión, apertura máxima)
+        H_inst_params = [self.H_inst_lps(q, k_lps, s, D2_mm, 90, dH0=0.0) for q in Q_plot]
         
-        # Curva con parámetros + presión (apertura 100%)
-        H_inst_params_pres = [self.H_inst_lps(q, k_lps, s, kvmax, 100.0, dH0=dH0) for q in Q_plot]
+        # Curva con parámetros + presión (apertura máxima)
+        H_inst_params_pres = [self.H_inst_lps(q, k_lps, s, D2_mm, 90, dH0=dH0) for q in Q_plot]
         
         # Curva ACTIVA (parámetros + presión + apertura) - SIEMPRE NARANJA
-        H_inst_active = [self.H_inst_lps(q, k_lps, s, kvmax, open_pct, dH0=dH0) for q in Q_plot]
+        H_inst_active = [self.H_inst_lps(q, k_lps, s, D2_mm, open_deg, dH0=dH0) for q in Q_plot]
         
         # Curva de RENDIMIENTO de la bomba
         eta_plot = [eta_bomba(q) * 100 for q in Q_plot]  # En %
@@ -705,15 +759,15 @@ class App(ctk.CTk):
         params_changed = (self.k_lps_default is not None and 
                           abs(k_lps - self.k_lps_default) > 1e-12) or \
                           abs(s - s_def) > 1e-9 or \
-                          abs(kvmax - kvmax_def) > 1e-9
+                          abs(D2_mm - D2_def) > 1e-9
         presion_changed = dH0 > 1e-9
-        apertura_changed = open_pct < 100
+        apertura_changed = open_deg < 90
         any_change = params_changed or presion_changed or apertura_changed
         
         # Curva Bomba Fija
         Qs, Hs = Qb_ls, Hb_m
 
-        if open_pct == 0:
+        if open_deg == 0:
             # === CASO VÁLVULA CERRADA ===
             
             # 1. Curva de RENDIMIENTO (roja, arriba)
@@ -732,7 +786,7 @@ class App(ctk.CTk):
             
             if (params_changed or presion_changed) and apertura_changed:
                 self.ax.plot(Q_plot, H_inst_params_pres, linestyle="--", color="dimgray",
-                            label=r"CCI (apertura 100%)", linewidth=1.2, alpha=0.6)
+                            label=r"CCI (apertura 90°)", linewidth=1.2, alpha=0.6)
             
             # 4. Curva Bomba
             self.ax.plot(Qs, Hs, "o-", color="tab:green", label=r"CC bomba (1490 rpm)", linewidth=2)
@@ -774,10 +828,10 @@ class App(ctk.CTk):
             
             if (params_changed or presion_changed) and apertura_changed:
                 self.ax.plot(Q_plot, H_inst_params_pres, linestyle="--", color="dimgray",
-                            label=r"CCI (apertura 100%)", linewidth=1.2, alpha=0.6)
+                            label=r"CCI (apertura 90°)", linewidth=1.2, alpha=0.6)
             
             # 4. CURVA ACTIVA - SIEMPRE NARANJA CONTINUO
-            label_activa = r"CCI activa" if not apertura_changed else rf"CCI activa ({open_pct:.0f}%)"
+            label_activa = r"CCI activa" if not apertura_changed else rf"CCI activa ({open_deg:.0f}°)"
             self.ax.plot(Q_plot, H_inst_active, linestyle="-", color="tab:orange",
                         label=label_activa, linewidth=2.5)
             
@@ -808,7 +862,7 @@ class App(ctk.CTk):
         if not parsed:
             messagebox.showinfo("Primero calcula", "Calcula a) b) c) antes de aplicar d).")
             return
-        s, nu, D1m, L1, D2m, L2, eps_cm, open_pct, kvmax = parsed
+        s, nu, D1m, L1, D2m, D2_mm, L2, eps_cm, open_deg = parsed
 
         txt = self.PB_var.get().strip()
         if txt == "":
@@ -865,13 +919,13 @@ class App(ctk.CTk):
         self.D2_var.set("150")
         self.L2_var.set("500")
         self.eps_var.set("0.01")
-        self.open_var.set("100")
+        self.open_var.set("90")  # grados
         self.PB_var.set("")
         
         # 2. Reset Dashboard
         self.res_a_chw.set("-")
         self.res_a_ecuacion.set("Pendiente de cálculo")
-        self.res_b_apertura.set("- %")
+        self.res_b_apertura.set("- °")
         self.res_b_kvmax.set("-")
         self.res_b_Q.set("--.--")
         self.res_b_H.set("--.--")
