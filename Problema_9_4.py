@@ -435,19 +435,20 @@ class App(ctk.CTk):
 
         # 3. Datos (Dos columnas)
         col1_x = 0.25; col2_x = 0.75; row_y = 0.52
-        step_y = 0.06
+        step_y = 0.055
         
         self.ax.text(0.5, 0.58, "Condiciones de Diseño:", ha='center', fontsize=12, weight='bold', style='italic')
         
         # Columna 1
         self.ax.text(col1_x, row_y, rf"$Q = {Q:.2f}\ L/s$", ha='center', fontsize=11)
-        self.ax.text(col1_x, row_y-step_y, rf"$P_{{atm}} = {(Patm_bar*1e5/gamma):.3f}\ m.c.a.$", ha='center', fontsize=11)
-        self.ax.text(col1_x, row_y-2*step_y, rf"$P_v = {(Pv_bar*1e5/gamma):.3f}\ m.c.a.$", ha='center', fontsize=11)
+        self.ax.text(col1_x, row_y-step_y, rf"$Z = {self.cfg['z_m']:.0f}\ m$", ha='center', fontsize=11)
+        self.ax.text(col1_x, row_y-2*step_y, rf"$P_{{atm}} = {(Patm_bar*1e5/gamma):.3f}\ m.c.a.$", ha='center', fontsize=11)
+        self.ax.text(col1_x, row_y-3*step_y, rf"$P_v = {(Pv_bar*1e5/gamma):.3f}\ m.c.a.$", ha='center', fontsize=11)
         
         # Columna 2
         self.ax.text(col2_x, row_y, rf"$NPSH_{{req}} = {H_req:.3f}\ m$", ha='center', fontsize=11)
         self.ax.text(col2_x, row_y-step_y, rf"$NPSH_{{seg}} = {NPSH_seg:.3f}\ m$", ha='center', fontsize=11)
-        self.ax.text(col2_x, row_y-2*step_y, rf"$h_f = {hf_m:.3f}\ m$", ha='center', fontsize=11)
+        self.ax.text(col2_x, row_y-2*step_y, rf"$h_{{f,asp}} = {hf_m:.3f}\ m$", ha='center', fontsize=11)
 
         # 4. Resultados
         res_y = 0.20
@@ -509,14 +510,15 @@ class App(ctk.CTk):
         self.ax.plot(Qplot, H_req_curve, linewidth=2.5, label=r"$NPSH_{req}$ (catálogo)", color="#1976D2")
         self.ax.plot(Qplot, H_disp_curve, linewidth=2.5, linestyle="--", label=r"$NPSH_{disp}$ (condiciones actuales)", color="#388E3C")
         
-        # Zona de riesgo (donde NPSH_disp < NPSH_req + NPSH_seg)
-        H_req_plus_seg = H_req_curve + NPSH_seg
-        self.ax.fill_between(Qplot, H_req_plus_seg, H_disp_curve,
-                            where=(H_disp_curve < H_req_plus_seg), alpha=0.25, color="red", label="Zona de riesgo")
-        self.ax.fill_between(Qplot, H_req_plus_seg, H_disp_curve,
-                            where=(H_disp_curve >= H_req_plus_seg), alpha=0.15, color="green", label="Zona segura")
+        # Zona de riesgo (donde NPSH_disp < NPSH_req, sin margen de seguridad)
+        # La zona de riesgo es CAVITACIÓN REAL, no falta de margen
+        self.ax.fill_between(Qplot, H_req_curve, H_disp_curve,
+                            where=(H_disp_curve < H_req_curve), alpha=0.25, color="red", label="Zona de riesgo")
+        self.ax.fill_between(Qplot, H_req_curve, H_disp_curve,
+                            where=(H_disp_curve >= H_req_curve), alpha=0.15, color="green", label="Zona segura")
         
-        # Línea de NPSH_req + NPSH_seg
+        # Línea de NPSH_req + NPSH_seg (referencia visual del margen deseado)
+        H_req_plus_seg = H_req_curve + NPSH_seg
         self.ax.plot(Qplot, H_req_plus_seg, color="orange", linestyle=":", linewidth=2, label=rf"$NPSH_{{req}} + NPSH_{{seg}}$ ({NPSH_seg:.2f} m)", alpha=0.8)
         
         # Línea vertical en Q seleccionado mostrando NPSH_seg_real
@@ -576,16 +578,17 @@ class App(ctk.CTk):
         self.lbl_npsh_disp.configure(text=f"NPSH disp = {H_disp_sel:.2f} m")
         self.lbl_npsh_req.configure(text=f"NPSH req = {H_req_sel:.2f} m")
         
+        # El margen es NPSH_disp - NPSH_req (diferencia real)
+        margen_real = H_disp_sel - H_req_sel
+        
         if cavita:
-            self.lbl_margen.configure(text=f"⚠ Déficit: {abs(NPSH_seg_real):.3f} m",
+            self.lbl_margen.configure(text=f"⚠ Déficit: {abs(margen_real):.3f} m",
                                      text_color="red")
         elif margen_insuficiente:
-            deficit = NPSH_seg - NPSH_seg_real
-            self.lbl_margen.configure(text=f"⚠ Falta: {deficit:.3f} m",
+            self.lbl_margen.configure(text=f"⚠ Margen bajo: {margen_real:.3f} m",
                                      text_color="orange")
         else:
-            margen = NPSH_seg_real - NPSH_seg
-            self.lbl_margen.configure(text=f"✓ Margen: +{margen:.3f} m",
+            self.lbl_margen.configure(text=f"✓ Margen: {margen_real:.3f} m",
                                      text_color="green")
     
     def _volver_menu(self):
