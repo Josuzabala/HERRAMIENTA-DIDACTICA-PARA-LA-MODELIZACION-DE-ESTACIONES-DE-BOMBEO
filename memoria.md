@@ -2,7 +2,7 @@
 	Resultados
 El apartado de Resultados sigue una estructura común en todos los problemas para mostrar de forma clara cómo trabaja el software. Cada bloque comienza con el enunciado original, seguido de las modificaciones necesarias para su adaptación al modelo computacional. Después se expone la resolución, donde se construyen las curvas características, se determina el punto de funcionamiento y se analizan los parámetros hidráulicos relevantes. Cuando el problema incorpora elementos adicionales, se describe la metodología de las funciones extra implementadas. Finalmente, los resultados y su validación comparan las salidas del programa con las soluciones teóricas, demostrando que el comportamiento obtenido es coherente y que el modelo reproduce correctamente los casos incluidos en IBS.
 4.1 Problema nº1: Bombeo entre depósitos con válvula de regulación en la impulsión
-4.1.1 Enunciado original del Problema nº1
+4.1.1 Enunciado original del Problema nº1 
 
   
 
