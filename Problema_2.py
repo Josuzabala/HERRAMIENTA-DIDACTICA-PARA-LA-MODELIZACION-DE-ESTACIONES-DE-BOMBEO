@@ -170,7 +170,7 @@ class App(ctk.CTk):
         leftcol.grid_columnconfigure(0, weight=1)
 
         # Controles scrollables
-        controls = ctk.CTkScrollableFrame(leftcol, width=440)
+        controls = ctk.CTkFrame(leftcol, width=440)
         controls.grid(row=0, column=0, sticky="nsew")
 
         # Variables por defecto
@@ -261,6 +261,16 @@ class App(ctk.CTk):
         
         self.hobj_var.trace_add("write", sync_hobj_to_h8)
 
+        # Barra de bombas (debajo de sliders)
+        self.pump_bar = ctk.CTkFrame(controls); self.pump_bar.pack(fill="x", padx=6, pady=(8,4))
+        ctk.CTkLabel(self.pump_bar, text="Bombas disponibles:", font=ctk.CTkFont(size=12)).pack(anchor="w")
+        self.pump_labels = {}
+        row_pump = ctk.CTkFrame(self.pump_bar); row_pump.pack(fill="x")
+        for D in RODETES_MM:
+            lbl = ctk.CTkLabel(row_pump, text=f"{int(D)}", corner_radius=6, width=40, font=ctk.CTkFont(size=11))
+            lbl.pack(side="left", padx=2, pady=2)
+            self.pump_labels[D] = lbl
+
         # Botonera fija (no scroll)
         btnrow = ctk.CTkFrame(leftcol)
         btnrow.grid(row=1, column=0, sticky="ew", pady=(8,0))
@@ -289,36 +299,30 @@ class App(ctk.CTk):
         # Badge dinámico
         self.badge_artist = None
 
-        # Resultados organizados (A,B Izq | C,D Der)
+        # Resultados organizados (A,B | C | D)
         res = ctk.CTkFrame(right); res.grid(row=1, column=0, sticky="nsew", padx=4, pady=(2,4))
-        res.grid_columnconfigure(0, weight=1); res.grid_columnconfigure(1, weight=1)
+        res.grid_columnconfigure(0, weight=1); res.grid_columnconfigure(1, weight=1); res.grid_columnconfigure(2, weight=1)
         
         # Columna Izquierda (A y B)
         c_left = ctk.CTkFrame(res, fg_color="transparent"); c_left.grid(row=0, column=0, sticky="nsew", padx=4)
-        ctk.CTkLabel(c_left, text="A) Curva Instalación y B) Selección Bomba", font=self.font_h2).pack(anchor="w", pady=2)
-        
-        self.txt_ab = ctk.CTkTextbox(c_left, font=self.font_body, height=120)
+        ctk.CTkLabel(c_left, text="A) Instalación y B) Selección", font=self.font_h2).pack(anchor="w", pady=2)
+        self.txt_ab = ctk.CTkTextbox(c_left, font=self.font_body, activate_scrollbars=False)
         self.txt_ab.pack(fill="both", expand=True, pady=2)
         
-        # Barra de bombas dentro de la col izq
-        self.pump_bar = ctk.CTkFrame(c_left); self.pump_bar.pack(fill="x", pady=4)
-        ctk.CTkLabel(self.pump_bar, text="Bombas disponibles:", font=ctk.CTkFont(size=12)).pack(anchor="w")
-        self.pump_labels = {}
-        row_pump = ctk.CTkFrame(self.pump_bar); row_pump.pack(fill="x")
-        for D in RODETES_MM:
-            lbl = ctk.CTkLabel(row_pump, text=f"{int(D)}", corner_radius=6, width=40, font=ctk.CTkFont(size=11))
-            lbl.pack(side="left", padx=2, pady=2)
-            self.pump_labels[D] = lbl
-
-        # Columna Derecha (C y D)
-        c_right = ctk.CTkFrame(res, fg_color="transparent"); c_right.grid(row=0, column=1, sticky="nsew", padx=4)
-        ctk.CTkLabel(c_right, text="C) Punto Func. y D) Regulación", font=self.font_h2).pack(anchor="w", pady=2)
+        # Columna Central (C)
+        c_mid = ctk.CTkFrame(res, fg_color="transparent"); c_mid.grid(row=0, column=1, sticky="nsew", padx=4)
+        ctk.CTkLabel(c_mid, text="C) Punto de Funcionamiento", font=self.font_h2).pack(anchor="w", pady=2)
+        self.txt_c = ctk.CTkTextbox(c_mid, font=self.font_body, activate_scrollbars=False)
+        self.txt_c.pack(fill="both", expand=True, pady=2)
         
-        self.txt_cd = ctk.CTkTextbox(c_right, font=self.font_body, height=150)
-        self.txt_cd.pack(fill="both", expand=True, pady=2)
+        # Columna Derecha (D)
+        c_right = ctk.CTkFrame(res, fg_color="transparent"); c_right.grid(row=0, column=2, sticky="nsew", padx=4)
+        ctk.CTkLabel(c_right, text="D) Regulación", font=self.font_h2).pack(anchor="w", pady=2)
+        self.txt_d = ctk.CTkTextbox(c_right, font=self.font_body, activate_scrollbars=False)
+        self.txt_d.pack(fill="both", expand=True, pady=2)
 
         # Inicializar textos
-        for tb in (self.txt_ab, self.txt_cd):
+        for tb in (self.txt_ab, self.txt_c, self.txt_d):
             tb.insert("end", "Calculando...\n"); tb.configure(state="disabled")
 
     # -------------------- TAB: RESULTADOS (DASHBOARD) -------------------- #
@@ -870,20 +874,24 @@ class App(ctk.CTk):
         )
         self._set_text(self.txt_ab, txt_a)
 
-        # Derecha: C y D
-        txt_cd = (
+        # Derecha: C y D (separados)
+        txt_c = (
             f"C) FUNCIONAMIENTO:\n"
             f"   Q = {Qpf:.2f} l/s\n"
             f"   H = {Hpf:.2f} mca\n"
             f"   η = {eta_pf*100:.1f} %\n"
             f"   Pot = {Pabs_kW:.2f} kW\n"
             f"   h_chorro = {h_real:.2f} m\n"
-            f"   Coste = {coste_m3:.4f} €/m³\n\n"
+            f"   Coste/volumen= {coste_m3:.4f} €/m³\n"
+            f"   Coste/hora= {coste_hora:.3f} €/h"
+        )
+        txt_d = (
             f"D) REGULACIÓN (h_obj={hobj}m):\n"
             f"   Q_obj = {Q_obj:.2f} l/s\n"
             f"   {aviso_d}"
         )
-        self._set_text(self.txt_cd, txt_cd)
+        self._set_text(self.txt_c, txt_c)
+        self._set_text(self.txt_d, txt_d)
 
         # Gráficas - ΔH siempre visible
         reg_data = (Q_obj, H_syst_base, H_bomb_obj)

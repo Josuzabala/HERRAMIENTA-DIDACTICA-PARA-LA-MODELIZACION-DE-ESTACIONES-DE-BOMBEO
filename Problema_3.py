@@ -426,7 +426,7 @@ class App(ctk.CTk):
                     ha='center', va='top', fontsize=12)
 
         # 2. Fórmulas
-        self.ax.text(0.5, 0.75, r"$\Delta Z = \frac{P_{atm} - P_v}{\gamma} - h_f - (NPSH_{req} + NPSH_{seg})$",
+        self.ax.text(0.5, 0.75, r"$\Delta Z = \frac{P_{atm} - P_v}{\gamma} - h_{f,asp} - (NPSH_{req} + NPSH_{seg})$",
                     ha='center', va='center', fontsize=14, 
                     bbox=dict(boxstyle="round,pad=0.5", fc="#E3F2FD", ec="#2196F3"))
         

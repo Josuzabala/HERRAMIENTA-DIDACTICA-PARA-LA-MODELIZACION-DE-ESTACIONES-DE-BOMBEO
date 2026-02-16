@@ -123,8 +123,8 @@ def hf_valve_new(Q_lps, s_rel, D_valve_mm, aperture_deg):
     Retorna hf en m.c.l.
     """
     if aperture_deg >= 90:
-        # Válvula completamente abierta, pérdidas mínimas
-        Kv = get_Kv_from_diameter_and_aperture(D_valve_mm, 90)
+        # Válvula completamente abierta: sin pérdidas (equivale a no tener válvula)
+        return 0.0
     elif aperture_deg <= 0:
         # Válvula cerrada
         return 0.0 if Q_lps <= 1e-12 else 1e9
@@ -219,11 +219,12 @@ class App(ctk.CTk):
         self._draw_static_ccb()
 
     # -------------------- helpers UI -------------------- #
-    def _flash(self, widget, color=("#FFF4CC", "#3A2F00"), dur_ms=180):
+    def _flash(self, widget, color=("#FFF4CC", "#3A2F00"), dur_ms=600):
         try:
-            orig = widget.cget("fg_color")
+            if not hasattr(widget, '_base_fg_color'):
+                widget._base_fg_color = widget.cget("fg_color")
             widget.configure(fg_color=color)
-            widget.after(dur_ms, lambda: widget.configure(fg_color=orig))
+            widget.after(dur_ms, lambda: widget.configure(fg_color=widget._base_fg_color))
         except Exception:
             pass
 
@@ -383,7 +384,9 @@ class App(ctk.CTk):
         plot_frame.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4,2))
         self.fig = plt.Figure(figsize=(6.8, 4.8))
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("H_m (m.c.a.)")
+        self.ax2 = self.ax.twinx()
+        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.)")
+        self.ax2.set_ylabel(r"$\eta$ (%)")
         self.ax.set_title("Curvas características y punto de funcionamiento"); self.ax.grid(True)
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
@@ -398,19 +401,19 @@ class App(ctk.CTk):
         left_col  = ctk.CTkFrame(res); left_col.grid(row=0, column=0, sticky="nsew", padx=(6,3), pady=6)
         right_col = ctk.CTkFrame(res); right_col.grid(row=0, column=1, sticky="nsew", padx=(3,6), pady=6)
 
-        # Columna Izquierda: Un solo cuadro para a, b, c
-        ctk.CTkLabel(left_col, text="Resumen a, b, c", font=self.font_h1).pack(anchor="w", padx=8, pady=(4,2))
-        self.txt_res_abc = ctk.CTkTextbox(left_col, font=self.font_body)
-        self.txt_res_abc.pack(fill="both", expand=True, padx=8, pady=2)
+        # Columna Izquierda: Un solo cuadro para a, b
+        ctk.CTkLabel(left_col, text="Resultados a, b", font=self.font_h1).pack(anchor="w", padx=8, pady=(4,2))
+        self.txt_res_ab = ctk.CTkTextbox(left_col, font=self.font_body, activate_scrollbars=False)
+        self.txt_res_ab.pack(fill="both", expand=True, padx=8, pady=2)
         
-        # Columna Derecha: Un solo cuadro para d, e
-        ctk.CTkLabel(right_col, text="Resumen d, e", font=self.font_h1).pack(anchor="w", padx=8, pady=(4,2))
-        self.txt_res_de = ctk.CTkTextbox(right_col, font=self.font_body)
-        self.txt_res_de.pack(fill="both", expand=True, padx=8, pady=2)
+        # Columna Derecha: Un solo cuadro para c, d, e
+        ctk.CTkLabel(right_col, text="Resultados c, d, e", font=self.font_h1).pack(anchor="w", padx=8, pady=(4,2))
+        self.txt_res_cde = ctk.CTkTextbox(right_col, font=self.font_body, activate_scrollbars=False)
+        self.txt_res_cde.pack(fill="both", expand=True, padx=8, pady=2)
         
         # Inicializar textos
-        self._set_text(self.txt_res_abc, "a) Pendiente de cálculo…\n\nb) Pendiente de cálculo…\n\nc) Pendiente de cálculo…\n")
-        self._set_text(self.txt_res_de, "d) Introduce P_B y pulsa el botón.\n\ne) Pendiente de cálculo.\n")
+        self._set_text(self.txt_res_ab, "a) Pendiente de cálculo…\n\nb) Pendiente de cálculo…\n")
+        self._set_text(self.txt_res_cde, "c) Pendiente de cálculo…\n\nd) Introduce P_B y pulsa el botón.\n\ne) Pendiente de cálculo.\n")
 
     # -------------------- TAB: RESULTADOS (DASHBOARD) -------------------- #
     def _build_resultados(self):
@@ -561,8 +564,11 @@ class App(ctk.CTk):
         self.k_lps_default = k_total_lps
     
     def _draw_static_ccb(self):
-        self.ax.cla(); self.ax.grid(True)
-        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel("Hm (mcl)")
+        self.ax.cla(); self.ax2.cla(); self.ax.grid(True)
+        self.ax2.yaxis.tick_right()
+        self.ax2.yaxis.set_label_position('right')
+        self.ax.set_xlabel("Q (l/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.)")
+        self.ax2.set_ylabel(r"$\eta$ (%)")
         self.ax.set_title("Curvas características y punto de funcionamiento")
         self.ax.plot(Qb_ls, Hb_m, "o-", label="CC bomba (1490 rpm)", linewidth=2, color="tab:green")
         self.ax.legend(); self.canvas.draw_idle()
@@ -620,11 +626,18 @@ class App(ctk.CTk):
         # Usar la presión aplicada (puede ser 0 si no se ha aplicado)
         dH0 = self.dH0_applied
 
-        def equilibrio(q):
-            return H_bomba(q) - self.H_inst_lps(q, k_lps, s, D2_mm, open_deg, dH0=dH0)
+        # --- PUNTO DE FUNCIONAMIENTO BASE (sin presión, para [b] y [c]) ---
+        def equilibrio_base(q):
+            return H_bomba(q) - self.H_inst_lps(q, k_lps, s, D2_mm, open_deg, dH0=0.0)
 
         Qmax_busca = 65.0
-        Qpf = bisect_root(equilibrio, 0.0, Qmax_busca, tol=1e-8)
+        Qpf_base = bisect_root(equilibrio_base, 0.0, Qmax_busca, tol=1e-8)
+
+        # --- PUNTO DE FUNCIONAMIENTO ACTIVO (con presión, para gráfica) ---
+        def equilibrio_activo(q):
+            return H_bomba(q) - self.H_inst_lps(q, k_lps, s, D2_mm, open_deg, dH0=dH0)
+
+        Qpf_activo = bisect_root(equilibrio_activo, 0.0, Qmax_busca, tol=1e-8)
         
         # Obtener Kv actual para mostrar
         Kv_actual = get_Kv_from_diameter_and_aperture(D2_mm, open_deg)
@@ -659,8 +672,8 @@ class App(ctk.CTk):
             f"    Aplica cuando B está presurizado."
         )
 
-        if Qpf is None:
-            # CASO SIN INTERSECCIÓN (Caudal Nulo)
+        if Qpf_base is None:
+            # CASO SIN INTERSECCIÓN BASE (Caudal Nulo)
             self._plot_curvas(k_lps, s, D2_mm, open_deg, Qpf=None)
             
             # Dashboard a ceros/alertas
@@ -676,8 +689,8 @@ class App(ctk.CTk):
             str_b = f"[b] Punto de funcionamiento:\n    Apertura = {open_deg:.0f}°.\n    Q = 0.00 l/s (Cerrado)."
             str_c = f"[c] Potencia absorbida:\n    P_abs = 0.00 kW."
             
-            self._set_text(self.txt_res_abc, f"{str_a}\n\n{str_b}\n\n{str_c}")
-            self._set_text(self.txt_res_de, f"d) Introduce P_B y pulsa el botón.\n\n{str_e}")
+            self._set_text(self.txt_res_ab, f"{str_a}\n\n{str_b}")
+            self._set_text(self.txt_res_cde, f"{str_c}\nd) Introduce P_B y pulsa el botón.\n{str_e}")
 
             # Tabla
             for row in self.tree.get_children(): self.tree.delete(row)
@@ -688,46 +701,57 @@ class App(ctk.CTk):
             self.d_btn.configure(state="disabled")
             return
 
-        # CASO NORMAL (Con caudal)
-        Hpf = H_bomba(Qpf); etapf = eta_bomba(Qpf)
+        # CASO NORMAL (Con caudal base)
+        Hpf_base = H_bomba(Qpf_base); etapf_base = eta_bomba(Qpf_base)
         gamma = 9800.0 * s
-        Pabs_kW = gamma*(Qpf/1000.0)*Hpf/max(etapf,1e-9)/1000.0
+        Pabs_kW_base = gamma*(Qpf_base/1000.0)*Hpf_base/max(etapf_base,1e-9)/1000.0
 
-        # Dashboard con datos
+        # Dashboard con datos BASE (siempre sin presión)
         self.res_b_apertura.set(f"Apertura: {open_deg:.0f}°")
         self.res_b_kvmax.set(f"Kv: {Kv_actual:.0f}")
-        self.res_b_Q.set(f"{Qpf:.2f}")
-        self.res_b_H.set(f"{Hpf:.2f}")
-        self.res_b_Eta.set(f"{etapf*100:.1f}")
-        self.res_c_Pabs.set(f"{Pabs_kW:.2f}")
+        self.res_b_Q.set(f"{Qpf_base:.2f}")
+        self.res_b_H.set(f"{Hpf_base:.2f}")
+        self.res_b_Eta.set(f"{etapf_base*100:.1f}")
+        self.res_c_Pabs.set(f"{Pabs_kW_base:.2f}")
         self.res_status.set("Cálculo exitoso. Sistema en equilibrio.")
         
-        # Textos panel interactivo
+        # Textos panel interactivo ([b] y [c] siempre con valores BASE)
         str_b = (
             f"[b] Punto de funcionamiento:\n"
             f"    Apertura = {open_deg:.0f}°.\n"
-            f"    Q = {Qpf:.2f} l/s, H = {Hpf:.2f} m, η = {etapf*100:.1f} %."
+            f"    Q = {Qpf_base:.2f} l/s, H = {Hpf_base:.2f} m, η = {etapf_base*100:.1f} %."
         )
-        str_c = f"[c] Potencia absorbida:\n    P_abs ≈ {Pabs_kW:.2f} kW."
+        str_c = f"[c] Potencia absorbida:\n    P_abs ≈ {Pabs_kW_base:.2f} kW."
 
-        self._set_text(self.txt_res_abc, f"{str_a}\n\n{str_b}\n\n{str_c}")
-        self._set_text(self.txt_res_de, f"d) Introduce P_B y pulsa el botón.\n\n{str_e}")
+        self._set_text(self.txt_res_ab, f"{str_a}\n\n{str_b}")
+        self._set_text(self.txt_res_cde, f"{str_c}\nd) Introduce P_B y pulsa el botón.\n{str_e}")
 
-        # Tabla
+        # Tabla (usa valores activos con presión para reflejar el estado actual)
         for row in self.tree.get_children(): self.tree.delete(row)
         for q in qs:
             eta_q = eta_bomba(q) * 100  # Rendimiento en %
             self.tree.insert("", "end", values=(f"{q:5.0f}", f"{self.H_inst_lps(q, k_lps, s, D2_mm, open_deg, dH0=dH0):6.2f}", f"{eta_q:.0f}"))
 
-        # Gráfica
-        self._plot_curvas(k_lps, s, D2_mm, open_deg, Qpf=Qpf, Hpf=Hpf)
+        # Gráfica (usa punto activo con presión)
+        Qpf_graph = Qpf_activo
+        Hpf_graph = H_bomba(Qpf_activo) if Qpf_activo is not None else None
+        self._plot_curvas(k_lps, s, D2_mm, open_deg, Qpf=Qpf_graph, Hpf=Hpf_graph)
 
-        self.last_Qpf, self.last_Hpf, self.last_eta = Qpf, Hpf, etapf
+        # Guardar punto activo (para uso en aplicar_presion_B)
+        if Qpf_activo is not None:
+            self.last_Qpf = Qpf_activo
+            self.last_Hpf = H_bomba(Qpf_activo)
+            self.last_eta = eta_bomba(Qpf_activo)
+        else:
+            self.last_Qpf, self.last_Hpf, self.last_eta = None, None, None
         self.d_btn.configure(state="normal")
 
     def _plot_curvas(self, k_lps, s, D2_mm, open_deg, Qpf=None, Hpf=None):
-        self.ax.cla(); self.ax.grid(True)
-        self.ax.set_xlabel(r"$Q$ (L/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.) — $\eta$ (%)")
+        self.ax.cla(); self.ax2.cla(); self.ax.grid(True)
+        self.ax2.yaxis.tick_right()
+        self.ax2.yaxis.set_label_position('right')
+        self.ax.set_xlabel(r"$Q$ (L/s)"); self.ax.set_ylabel(r"$H_m$ (m.c.l.)")
+        self.ax2.set_ylabel(r"$\eta$ (%)")
         self.ax.set_title("Curvas características y punto de funcionamiento")
 
         Q_plot = self.Q_plot
@@ -770,8 +794,8 @@ class App(ctk.CTk):
         if open_deg == 0:
             # === CASO VÁLVULA CERRADA ===
             
-            # 1. Curva de RENDIMIENTO (roja, arriba)
-            self.ax.plot(Q_plot, eta_plot, "^-", color="tab:red", label=r"$\eta$ (%)", 
+            # 1. Curva de RENDIMIENTO en eje DERECHO (roja)
+            self.ax2.plot(Q_plot, eta_plot, "^-", color="tab:red", label=r"$\eta$ (%)", 
                         linewidth=1.5, markersize=4, markevery=20)
             
             # 2. Curva por defecto (azul discontinuo) - solo si hay cambios
@@ -792,13 +816,13 @@ class App(ctk.CTk):
             self.ax.plot(Qs, Hs, "o-", color="tab:green", label=r"CC bomba (1490 rpm)", linewidth=2)
             
             # 5. LÍNEA VERTICAL (válvula cerrada) - NARANJA (curva activa)
-            y_techo = max(max(Hs), max(eta_plot)) * 1.1
+            y_techo = max(Hs) * 1.1
             self.ax.plot([0, 0], [self.delta_z + dH0, y_techo], color="tab:orange", linewidth=3, 
                         label=r"CCI activa (válvula cerrada)")
             
-            # Punto de funcionamiento en rendimiento (Q=0)
+            # Punto de funcionamiento en rendimiento (Q=0) en eje derecho
             eta_pf = eta_bomba(0) * 100
-            self.ax.plot([0], [eta_pf], "^", markersize=10, color="darkred", zorder=5)
+            self.ax2.plot([0], [eta_pf], "^", markersize=10, color="darkred", zorder=5)
             
             # Cartel rojo translúcido
             self.ax.text(
@@ -812,8 +836,8 @@ class App(ctk.CTk):
         else:
             # === CASO NORMAL (apertura > 0) ===
             
-            # 1. Curva de RENDIMIENTO (roja, arriba)
-            self.ax.plot(Q_plot, eta_plot, "^-", color="tab:red", label=r"$\eta$ (%)", 
+            # 1. Curva de RENDIMIENTO en eje DERECHO (roja)
+            self.ax2.plot(Q_plot, eta_plot, "^-", color="tab:red", label=r"$\eta$ (%)", 
                         linewidth=1.5, markersize=4, markevery=20)
             
             # 2. Curva por defecto (azul discontinuo) - solo si hay cambios
@@ -840,14 +864,16 @@ class App(ctk.CTk):
             
             # 6. Puntos de funcionamiento
             if Qpf is not None and Hpf is not None:
-                # Punto en la curva H
+                # Punto en la curva H (eje izquierdo)
                 self.ax.plot([Qpf], [Hpf], "^", markersize=10, 
                             label=r"Punto funcionamiento", color="darkred", zorder=5)
                 
-                # Punto en la curva de rendimiento
+                # Punto en la curva de rendimiento (eje derecho)
                 eta_pf = eta_bomba(Qpf) * 100
-                self.ax.plot([Qpf], [eta_pf], "^", markersize=10, 
+                self.ax2.plot([Qpf], [eta_pf], "^", markersize=10, 
                             color="darkred", zorder=5)
+
+            self.ax2.set_ylim(bottom=0, top=max(eta_plot) * 1.1)
 
         # Cota piezométrica (incluyendo presión)
         cota_total = self.delta_z + dH0
@@ -855,7 +881,11 @@ class App(ctk.CTk):
         label_cota = "Cota piezométrica" if dH0 < 1e-9 else f"Cota + presión ({cota_total:.1f} m)"
         self.ax.text(Q_plot.max()*0.02, cota_total+0.5, label_cota, fontsize=9, color="gray")
 
-        self.ax.legend(loc='upper right', fontsize=8); self.canvas.draw_idle()
+        # Combinar leyendas de ambos ejes
+        lines1, labels1 = self.ax.get_legend_handles_labels()
+        lines2, labels2 = self.ax2.get_legend_handles_labels()
+        self.ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=8)
+        self.canvas.draw_idle()
 
     def aplicar_presion_B(self):
         parsed = self._parse_inputs()
@@ -895,10 +925,13 @@ class App(ctk.CTk):
         )
         
         if self.last_Qpf is not None:
+            gamma = 9800.0 * s
+            Pabs_prim_kW = gamma*(self.last_Qpf/1000.0)*self.last_Hpf/max(self.last_eta,1e-9)/1000.0
             str_d = (
                 f"[d] Con depósito B presurizado:\n"
                 f"    P_B = {PB:.3f} kg/cm² → ΔH₀ ≈ {self.dH0_applied:.2f} mcl.\n"
-                f"    Q' = {self.last_Qpf:.2f} l/s, H' = {self.last_Hpf:.2f} m\n"
+                f"    Q' = {self.last_Qpf:.2f} l/s, H' = {self.last_Hpf:.2f} m, η' = {self.last_eta*100:.1f} %\n"
+                f"    P_abs' ≈ {Pabs_prim_kW:.2f} kW."
             )
         else:
             str_d = (
@@ -906,8 +939,19 @@ class App(ctk.CTk):
                 f"    P_B = {PB:.3f} kg/cm² → ΔH₀ ≈ {self.dH0_applied:.2f} mcl.\n"
                 f"    No hay intersección (P_B excesiva)."
             )
+        
+        # Leer el texto actual del panel para preservar [c] (base)
+        current_text = self.txt_res_cde.get("1.0", "end-1c")
+        # Extraer solo la parte [c] del texto actual (primera línea hasta [d] o [e])
+        lines = current_text.split("\n")
+        str_c_lines = []
+        for line in lines:
+            if line.startswith("[d]") or line.startswith("[e]") or line.startswith("d)"):
+                break
+            str_c_lines.append(line)
+        str_c_preserved = "\n".join(str_c_lines).rstrip()
             
-        self._set_text(self.txt_res_de, f"{str_d}\n\n{str_e}")
+        self._set_text(self.txt_res_cde, f"{str_c_preserved}\n{str_d}\n{str_e}")
     
     # -------------------- Utilidades UI -------------------- #
     def reset_valores(self):
@@ -936,8 +980,8 @@ class App(ctk.CTk):
         self.res_status.set("Valores restaurados. Pulsa Calcular.")
         
         # 3. Reset Textboxes Panel Izquierdo
-        self._set_text(self.txt_res_abc, "Pendiente de cálculo…\n")
-        self._set_text(self.txt_res_de, "d) Introduce PB y pulsa el botón.\n(e) Disponible tras aplicar d).\n")
+        self._set_text(self.txt_res_ab, "Pendiente de cálculo…\n")
+        self._set_text(self.txt_res_cde, "c) Pendiente de cálculo.\nd) Introduce PB y pulsa el botón.\ne) Disponible tras aplicar d).\n")
         
         for row in self.tree.get_children(): self.tree.delete(row)
         

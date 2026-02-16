@@ -163,7 +163,7 @@ class MainMenuApp(ctk.CTk):
             title="Problema nº1: Bombeo entre Depósitos",
             subtitle="Análisis de una instalación con depósitos a distinta cota, bomba centrífuga y válvula de regulación. Incluye cálculo de curvas y punto de funcionamiento.",
             image_path=os.path.join(assets_dir, "p1.png"),
-            command=lambda: self.launch("Problema_9_1.py"),
+            command=lambda: self.launch("Problema_1.py"),
             color_accent="#3B8ED0"
         )
         self.card1.grid(row=0, column=0, padx=10, pady=10, sticky="nsew") # nsew expands to fill grid cell
@@ -174,7 +174,7 @@ class MainMenuApp(ctk.CTk):
             title="Problema nº2: Fuente de Chorro",
             subtitle="Diseño hidráulico de un chorro vertical. Selección óptima de rodete, cálculo preciso de pérdidas y análisis detallado de eficiencia energética.",
             image_path=os.path.join(assets_dir, "p2.png"),
-            command=lambda: self.launch("Problema_9_2.py"),
+            command=lambda: self.launch("Problema_2.py"),
             color_accent="#FF9800"
         )
         self.card2.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
@@ -185,7 +185,7 @@ class MainMenuApp(ctk.CTk):
             title="Problema nº3: Cavitación (NPSH)",
             subtitle="Estudio profundo del fenómeno de cavitación. Cálculo de altura de aspiración máxima (Z_D) y verificación operacional en dos fases.",
             image_path=os.path.join(assets_dir, "p3.png"),
-            command=lambda: self.launch("Problema_9_4.py"),
+            command=lambda: self.launch("Problema_3.py"),
             color_accent="#D32F2F"
         )
         self.card3.grid(row=0, column=2, padx=10, pady=10, sticky="nsew")
@@ -195,9 +195,9 @@ class MainMenuApp(ctk.CTk):
         
         # Determine target ID based on script name
         target_id = None
-        if "Problema_9_1" in script_name: target_id = "p1"
-        elif "Problema_9_2" in script_name: target_id = "p2"
-        elif "Problema_9_4" in script_name: target_id = "p3"
+        if "Problema_1" in script_name: target_id = "p1"
+        elif "Problema_2" in script_name: target_id = "p2"
+        elif "Problema_3" in script_name: target_id = "p3"
         
         if getattr(sys, 'frozen', False):
             # Running as compiled exe: call self with argument
@@ -215,14 +215,14 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         arg = sys.argv[1]
         if arg == "--run-p1":
-            import Problema_9_1
-            Problema_9_1.main()
+            import Problema_1
+            Problema_1.main()
         elif arg == "--run-p2":
-            import Problema_9_2
-            Problema_9_2.main()
+            import Problema_2
+            Problema_2.main()
         elif arg == "--run-p3":
-            import Problema_9_4
-            Problema_9_4.main()
+            import Problema_3
+            Problema_3.main()
     else:
         # Default: Launch Menu
         app = MainMenuApp()

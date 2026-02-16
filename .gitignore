@@ -1,7 +1,41 @@
-dist/
-build/
-*.spec
+# --- Python ---
 __pycache__/
-*.exe
-.idea/
-.vscode/
+*.py[cod]
+*$py.class
+venv/
+env/
+
+# --- PyInstaller (Ejecutables) ---
+*.spec
+build/
+dist/
+
+# --- Documentación y LaTeX ---
+# Ignorar el documento fuente y sus generados
+*.tex
+*.aux
+*.log
+*.out
+*.pdf
+*.synctex.gz
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+
+# Ignorar documentos de Office
+*.docx
+*.pptx
+*.ppt
+*.doc
+
+# --- Recursos exclusivos del documento (NO del programa) ---
+figuras/
+tablas/
+otros/
+# (assets/ SÍ se incluye, así que no lo pongo aquí)
+
+# --- Archivos temporales del sistema ---
+.DS_Store
+Thumbs.db
