@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-TFG – Problema 9.1 (GUI) con customtkinter
-Versión FINAL DEFINITIVA (GOD EDITION + DASHBOARD UI) - CORREGIDA Y MEJORADA
-(Restaurada funcionalidad completa de la pestaña Interactivo y unificados los cuadros de resumen)
-
-Cambios recientes:
-- Unificados los cuadros de texto en "Interactivo":
-  - Izquierda: Un solo cuadro para a, b, c.
-  - Derecha: Un solo cuadro para d, e.
-  Esto elimina el exceso de barras de desplazamiento (sliders).
+TFG – Problema 9.1: Bombeo entre depósitos
+Interfaz gráfica con CustomTkinter para el análisis hidráulico
+de una instalación con bomba centrifuga, válvula de regulación
+y depósito presurizado.
 """
 
 import numpy as np
@@ -352,7 +347,7 @@ class App(ctk.CTk):
         self.d_btn = ctk.CTkButton(pb_row, text="Aplicar d) presurización", command=self.aplicar_presion_B, state="disabled")
         self.d_btn.pack(side="left", padx=4)
 
-        # Botón RESET (El GOD)
+        # Boton para restaurar valores por defecto
         reset_btn = ctk.CTkButton(controls, text="Restaurar valores iniciales", fg_color="#555555", hover_color="#333333", command=self.reset_valores)
         reset_btn.pack(fill="x", padx=6, pady=(6,10))
 

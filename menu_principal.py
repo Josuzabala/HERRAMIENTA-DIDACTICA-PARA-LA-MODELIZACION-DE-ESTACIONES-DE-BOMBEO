@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-MENU PRINCIPAL - SELECTOR DE PROBLEMAS
-Diseño Premium con CustomTkinter
+Menú principal – Selector de problemas
+Punto de entrada de la aplicación. Permite lanzar cada módulo
+de forma independiente.
 """
 
 import customtkinter as ctk

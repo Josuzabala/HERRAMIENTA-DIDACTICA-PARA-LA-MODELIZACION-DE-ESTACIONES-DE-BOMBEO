@@ -1,18 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-TFG – Problema 9.2 (GUI) - Refactorizado
-
-Mejoras implementadas:
-1. Panel de Control:
-   - Datos geométricos (z, Dp, Le, eps, Dc, kc) fijos (solo lectura).
-   - Deslizadores activos solo para: s, h_min, h_obj, Precio.
-   - Rangos ajustados (h_min [5,10], h_obj independiente).
-2. Gráfica:
-   - Se muestran los 5 rodetes (Activo: Naranja grueso, Resto: Gris discontinuo).
-   - Zoom inteligente centrado en el P.F.
-3. Diseño:
-   - Resultados texto reorganizados (A,B izq / C,D der).
-   - Pestaña Resultados: Dashboard visual con tarjetas.
+TFG – Problema 9.2: Fuente de chorro vertical
+Interfaz gráfica para el diseño de una fuente con bomba centrífuga.
+Incluye selección de rodete, cálculo de pérdidas y visualización
+del chorro en tiempo real.
 """
 
 import numpy as np
