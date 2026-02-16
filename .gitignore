@@ -39,3 +39,18 @@ otros/
 # --- Archivos temporales del sistema ---
 .DS_Store
 Thumbs.db
+
+# --- Documentación auxiliar y scripts de soporte ---
+# Ignorar archivos Markdown y Textos que no sean el README
+*.md
+*.txt
+# Excepto README.md si existiera
+!README.md
+!requirements.txt
+
+# Ignorar scripts auxiliares específicos
+crear_presentacion.py
+extraer_imagenes.py
+leer_docx.py
+selector.py
+__init__.py
